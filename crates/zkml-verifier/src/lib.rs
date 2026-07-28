@@ -20,7 +20,10 @@
 
 extern crate alloc;
 
-use soroban_sdk::{contract, contractimpl, contracttype, contracterror, log, symbol_short, Bytes, BytesN, Env, Symbol, Vec, U256};
+use soroban_sdk::{
+    contract, contracterror, contractimpl, contracttype, log, symbol_short, Bytes, BytesN, Env,
+    Symbol, Vec, U256,
+};
 
 // Storage keys
 const MODEL_HASH: Symbol = symbol_short!("mdl_hash");
@@ -43,8 +46,6 @@ const BN254_R: [u8; 32] = [
     0x30, 0x64, 0x4e, 0x72, 0xe1, 0x31, 0xa0, 0x29, 0xb8, 0x50, 0x45, 0xb6, 0x81, 0x81, 0x58, 0x5d,
     0x28, 0x33, 0xe8, 0x48, 0x79, 0xb9, 0x70, 0x91, 0x43, 0xe1, 0xf5, 0x93, 0xf0, 0x00, 0x00, 0x01,
 ];
-
-
 
 /// Rejection / Verification Errors
 #[contracterror]
@@ -135,7 +136,10 @@ impl ZkmlVerifierContract {
         env.storage().instance().set(&VERIFICATION_KEY, &vk);
         env.storage().instance().set(&VERIFY_CNT, &0u32);
         env.storage().instance().set(&INITIALIZED, &true);
-        log!(&env, "ZKML verifier initialized with model commitment and VK");
+        log!(
+            &env,
+            "ZKML verifier initialized with model commitment and VK"
+        );
     }
 
     /// Verify a Groth16 proof of ML inference.
@@ -184,7 +188,7 @@ impl ZkmlVerifierContract {
         if public_inputs.len() < 64 {
             return Err(VerifierError::InvalidInputsLength);
         }
-        if public_inputs.len() % 32 != 0 {
+        if !public_inputs.len().is_multiple_of(32) {
             return Err(VerifierError::InvalidInputsLength);
         }
 
@@ -227,7 +231,9 @@ impl ZkmlVerifierContract {
 
         use soroban_sdk::crypto::bn254::{Bn254G1Affine, Bn254G2Affine, Fr};
 
-        let ic0_bytes64: BytesN<64> = ic0.try_into().map_err(|_| VerifierError::InvalidProofLength)?;
+        let ic0_bytes64: BytesN<64> = ic0
+            .try_into()
+            .map_err(|_| VerifierError::InvalidProofLength)?;
         let mut l_g1 = Bn254G1Affine::from_bytes(ic0_bytes64);
 
         for i in 0..num_inputs {
@@ -235,11 +241,16 @@ impl ZkmlVerifierContract {
             let input_u256 = U256::from_be_bytes(&env, &input_bytes);
             let input_fr = Fr::from_u256(input_u256);
 
-            let ic_i = vk.ic.get((i + 1) as u32).ok_or(VerifierError::InvalidProofLength)?;
+            let ic_i = vk
+                .ic
+                .get(i + 1)
+                .ok_or(VerifierError::InvalidProofLength)?;
             if ic_i.len() != 64 {
                 return Err(VerifierError::InvalidProofLength);
             }
-            let ic_i_bytes64: BytesN<64> = ic_i.try_into().map_err(|_| VerifierError::InvalidProofLength)?;
+            let ic_i_bytes64: BytesN<64> = ic_i
+                .try_into()
+                .map_err(|_| VerifierError::InvalidProofLength)?;
             let ic_i_g1 = Bn254G1Affine::from_bytes(ic_i_bytes64);
 
             let scaled = ic_i_g1 * input_fr;
@@ -247,24 +258,42 @@ impl ZkmlVerifierContract {
         }
 
         // 6. Pairing check: e(-A, B) * e(alpha, beta) * e(L, gamma) * e(C, delta) == 1
-        let proof_a_bytes64: BytesN<64> = proof_a.try_into().map_err(|_| VerifierError::InvalidProofLength)?;
+        let proof_a_bytes64: BytesN<64> = proof_a
+            .try_into()
+            .map_err(|_| VerifierError::InvalidProofLength)?;
         let proof_a_g1 = Bn254G1Affine::from_bytes(proof_a_bytes64);
         let neg_a_g1 = -proof_a_g1;
 
-        let proof_b_bytes128: BytesN<128> = proof_b.try_into().map_err(|_| VerifierError::InvalidProofLength)?;
+        let proof_b_bytes128: BytesN<128> = proof_b
+            .try_into()
+            .map_err(|_| VerifierError::InvalidProofLength)?;
         let proof_b_g2 = Bn254G2Affine::from_bytes(proof_b_bytes128);
 
-        let alpha_bytes64: BytesN<64> = vk.alpha.try_into().map_err(|_| VerifierError::InvalidProofLength)?;
+        let alpha_bytes64: BytesN<64> = vk
+            .alpha
+            .try_into()
+            .map_err(|_| VerifierError::InvalidProofLength)?;
         let alpha_g1 = Bn254G1Affine::from_bytes(alpha_bytes64);
-        let beta_bytes128: BytesN<128> = vk.beta.try_into().map_err(|_| VerifierError::InvalidProofLength)?;
+        let beta_bytes128: BytesN<128> = vk
+            .beta
+            .try_into()
+            .map_err(|_| VerifierError::InvalidProofLength)?;
         let beta_g2 = Bn254G2Affine::from_bytes(beta_bytes128);
 
-        let gamma_bytes128: BytesN<128> = vk.gamma.try_into().map_err(|_| VerifierError::InvalidProofLength)?;
+        let gamma_bytes128: BytesN<128> = vk
+            .gamma
+            .try_into()
+            .map_err(|_| VerifierError::InvalidProofLength)?;
         let gamma_g2 = Bn254G2Affine::from_bytes(gamma_bytes128);
 
-        let proof_c_bytes64: BytesN<64> = proof_c.try_into().map_err(|_| VerifierError::InvalidProofLength)?;
+        let proof_c_bytes64: BytesN<64> = proof_c
+            .try_into()
+            .map_err(|_| VerifierError::InvalidProofLength)?;
         let proof_c_g1 = Bn254G1Affine::from_bytes(proof_c_bytes64);
-        let delta_bytes128: BytesN<128> = vk.delta.try_into().map_err(|_| VerifierError::InvalidProofLength)?;
+        let delta_bytes128: BytesN<128> = vk
+            .delta
+            .try_into()
+            .map_err(|_| VerifierError::InvalidProofLength)?;
         let delta_g2 = Bn254G2Affine::from_bytes(delta_bytes128);
 
         let mut vp1 = Vec::new(&env);
@@ -295,6 +324,7 @@ impl ZkmlVerifierContract {
         let count: u32 = env.storage().instance().get(&VERIFY_CNT).unwrap_or(0);
         env.storage().instance().set(&VERIFY_CNT, &(count + 1));
 
+        #[allow(deprecated)]
         env.events()
             .publish((symbol_short!("verified"),), record.verified_at);
 
@@ -369,25 +399,28 @@ mod test {
 #[cfg(test)]
 mod test_verify {
     use super::*;
-    use alloc::vec;
-    use soroban_sdk::Env;
     use soroban_sdk::crypto::bn254::{Bn254G1Affine, Bn254G2Affine};
+    use soroban_sdk::Env;
 
     const G2_X_C0: [u8; 32] = [
-        0x18, 0x00, 0xde, 0xef, 0x12, 0x1f, 0x1e, 0x76, 0x42, 0x6a, 0x00, 0x66, 0x5e, 0x5c, 0x44, 0x79,
-        0x67, 0x43, 0x22, 0xd4, 0xf7, 0x5e, 0xda, 0xdd, 0x46, 0xde, 0xbd, 0x5c, 0xd9, 0x92, 0xf6, 0xed,
+        0x18, 0x00, 0xde, 0xef, 0x12, 0x1f, 0x1e, 0x76, 0x42, 0x6a, 0x00, 0x66, 0x5e, 0x5c, 0x44,
+        0x79, 0x67, 0x43, 0x22, 0xd4, 0xf7, 0x5e, 0xda, 0xdd, 0x46, 0xde, 0xbd, 0x5c, 0xd9, 0x92,
+        0xf6, 0xed,
     ];
     const G2_X_C1: [u8; 32] = [
-        0x19, 0x8e, 0x93, 0x93, 0x92, 0x0d, 0x48, 0x3a, 0x7f, 0xe6, 0x3d, 0xfb, 0x86, 0x78, 0x6c, 0x4f,
-        0x03, 0x43, 0x20, 0x21, 0x11, 0x00, 0x34, 0xa7, 0x81, 0x8e, 0x69, 0x88, 0x8d, 0x37, 0x01, 0x50,
+        0x19, 0x8e, 0x93, 0x93, 0x92, 0x0d, 0x48, 0x3a, 0x7f, 0xe6, 0x3d, 0xfb, 0x86, 0x78, 0x6c,
+        0x4f, 0x03, 0x43, 0x20, 0x21, 0x11, 0x00, 0x34, 0xa7, 0x81, 0x8e, 0x69, 0x88, 0x8d, 0x37,
+        0x01, 0x50,
     ];
     const G2_Y_C0: [u8; 32] = [
-        0x0d, 0x39, 0x96, 0x6f, 0xa7, 0xa4, 0xf9, 0x43, 0x5b, 0x62, 0x56, 0xf1, 0x78, 0x4d, 0x65, 0x00,
-        0x59, 0xe1, 0x3d, 0x96, 0x91, 0xd4, 0xe4, 0x17, 0x7d, 0x34, 0x1b, 0x52, 0xf1, 0x02, 0x55, 0x47,
+        0x0d, 0x39, 0x96, 0x6f, 0xa7, 0xa4, 0xf9, 0x43, 0x5b, 0x62, 0x56, 0xf1, 0x78, 0x4d, 0x65,
+        0x00, 0x59, 0xe1, 0x3d, 0x96, 0x91, 0xd4, 0xe4, 0x17, 0x7d, 0x34, 0x1b, 0x52, 0xf1, 0x02,
+        0x55, 0x47,
     ];
     const G2_Y_C1: [u8; 32] = [
-        0x16, 0x5a, 0x25, 0x03, 0x9e, 0x1a, 0x96, 0x68, 0xe1, 0x61, 0x09, 0x91, 0xc0, 0x99, 0x30, 0xf3,
-        0x84, 0xc5, 0x9a, 0x58, 0x49, 0x84, 0x18, 0x04, 0xf5, 0x6f, 0x17, 0x76, 0x8f, 0x56, 0x64, 0x44,
+        0x16, 0x5a, 0x25, 0x03, 0x9e, 0x1a, 0x96, 0x68, 0xe1, 0x61, 0x09, 0x91, 0xc0, 0x99, 0x30,
+        0xf3, 0x84, 0xc5, 0x9a, 0x58, 0x49, 0x84, 0x18, 0x04, 0xf5, 0x6f, 0x17, 0x76, 0x8f, 0x56,
+        0x64, 0x44,
     ];
 
     fn get_valid_g1(env: &Env) -> Bn254G1Affine {
@@ -463,7 +496,7 @@ mod test_verify {
         let public_inputs_bytes = Bytes::from_slice(&env, &public_inputs);
 
         let res = client.verify_inference(&proof_a, &proof_b, &proof_c, &public_inputs_bytes);
-        assert_eq!(res, true);
+        assert!(res);
         assert_eq!(client.get_verification_count(), 1);
     }
 
@@ -491,7 +524,7 @@ mod test_verify {
 
         let public_inputs_bytes = Bytes::from_slice(&env, &public_inputs);
         let res = client.try_verify_inference(&proof_a, &proof_b, &proof_c, &public_inputs_bytes);
-        
+
         assert_eq!(res.err().unwrap().unwrap(), VerifierError::InvalidModelHash);
     }
 
@@ -523,8 +556,11 @@ mod test_verify {
 
         let public_inputs_bytes = Bytes::from_slice(&env, &public_inputs);
         let res = client.try_verify_inference(&proof_a, &proof_b, &proof_c, &public_inputs_bytes);
-        
-        assert_eq!(res.err().unwrap().unwrap(), VerifierError::InvalidCoordinates);
+
+        assert_eq!(
+            res.err().unwrap().unwrap(),
+            VerifierError::InvalidCoordinates
+        );
     }
 
     #[test]
@@ -556,8 +592,11 @@ mod test_verify {
 
         let public_inputs_bytes = Bytes::from_slice(&env, &public_inputs);
         let res = client.try_verify_inference(&proof_a, &proof_b, &proof_c, &public_inputs_bytes);
-        
-        assert_eq!(res.err().unwrap().unwrap(), VerifierError::InvalidCoordinates);
+
+        assert_eq!(
+            res.err().unwrap().unwrap(),
+            VerifierError::InvalidCoordinates
+        );
     }
 }
 
@@ -574,7 +613,7 @@ mod test_guards {
         let proof = Bytes::from_slice(&env, &[0u8; 64]);
         let public_inputs = Bytes::from_slice(&env, &[7u8; 96]);
         let res = client.try_verify_inference(&proof, &proof, &proof, &public_inputs);
-        
+
         assert_eq!(res.err().unwrap().unwrap(), VerifierError::NotInitialized);
     }
 }

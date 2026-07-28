@@ -43,7 +43,7 @@ const STATE_SIZE: usize = 3;
 /// * `domain` - Domain tag (1 for model, 2 for input)
 fn poseidon_commit(elements: &[i64], domain: u64) -> Commitment {
     let rate = STATE_SIZE - 1; // rate = 2 for t=3
-    
+
     // Convert i64 elements to Fr field elements
     let mut fr_elements: Vec<Fr> = elements
         .iter()
@@ -54,13 +54,13 @@ fn poseidon_commit(elements: &[i64], domain: u64) -> Commitment {
             Fr::from(abs_val)
         })
         .collect();
-    
+
     // Prepend domain tag for separation - this ensures it's hashed first
     fr_elements.insert(0, Fr::from(domain));
-    
+
     // Sponge absorption: absorb elements in rate-sized chunks
     let mut current_hash = Fr::from(0u64);
-    
+
     for chunk in fr_elements.chunks(rate) {
         let mut poseidon = Poseidon::<Fr>::new_circom(rate).unwrap();
         // Pad with zeros if chunk is smaller than rate
@@ -71,9 +71,9 @@ fn poseidon_commit(elements: &[i64], domain: u64) -> Commitment {
         // Hash this chunk
         let chunk_hash = poseidon.hash(&input).unwrap();
         // Chain with previous hash (XOR or addition)
-        current_hash = current_hash + chunk_hash;
+        current_hash += chunk_hash;
     }
-    
+
     // Return final hash as bytes
     let hash_bytes = current_hash.into_bigint().to_bytes_le();
     let mut result = [0u8; 32];
@@ -353,7 +353,11 @@ mod tests_snapshot {
     #[test]
     fn snapshot_logistic_regression_commitment() {
         let model = Model::LogisticRegression(LogisticRegression {
-            weights: vec![FixedPoint::from_raw(100, 16), FixedPoint::from_raw(200, 16), FixedPoint::from_raw(300, 16)],
+            weights: vec![
+                FixedPoint::from_raw(100, 16),
+                FixedPoint::from_raw(200, 16),
+                FixedPoint::from_raw(300, 16),
+            ],
             bias: FixedPoint::from_raw(50, 16),
         });
         let hash = commit_model(&model);
@@ -395,14 +399,12 @@ mod tests_snapshot {
     #[test]
     fn snapshot_tiny_mlp_commitment() {
         let model = Model::TinyMLP(TinyMLP {
-            layers: vec![
-                DenseLayer {
-                    weights: vec![FixedPoint::from_raw(10, 16), FixedPoint::from_raw(20, 16)],
-                    biases: vec![FixedPoint::from_raw(5, 16)],
-                    input_size: 2,
-                    output_size: 1,
-                },
-            ],
+            layers: vec![DenseLayer {
+                weights: vec![FixedPoint::from_raw(10, 16), FixedPoint::from_raw(20, 16)],
+                biases: vec![FixedPoint::from_raw(5, 16)],
+                input_size: 2,
+                output_size: 1,
+            }],
         });
         let hash = commit_model(&model);
         assert_debug_snapshot!(hash);
