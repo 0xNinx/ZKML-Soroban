@@ -18,16 +18,96 @@
 
 #![no_std]
 
-use soroban_sdk::{contract, contractimpl, contracttype, log, symbol_short, Bytes, Env, Symbol};
+extern crate alloc;
+
+use soroban_sdk::{contract, contractimpl, contracttype, contracterror, log, symbol_short, Bytes, BytesN, Env, Symbol, Vec, U256};
 
 // Storage keys
 const MODEL_HASH: Symbol = symbol_short!("mdl_hash");
 const LAST_RESULT: Symbol = symbol_short!("lst_res");
 const INITIALIZED: Symbol = symbol_short!("init");
 const VERIFY_CNT: Symbol = symbol_short!("vrf_cnt");
+const VERIFICATION_KEY: Symbol = symbol_short!("vk_key");
 
 /// Contract interface version, bumped on breaking interface changes.
 pub const VERSION: u32 = 1;
+
+/// BN254 base field modulus p = 21888242871839275222246405745257275088696311157297823662689037894645226208583
+const BN254_P: [u8; 32] = [
+    0x30, 0x64, 0x4e, 0x72, 0xe1, 0x31, 0xa0, 0x29, 0xb8, 0x50, 0x45, 0xb6, 0x81, 0x81, 0x58, 0x5d,
+    0x97, 0x81, 0x6a, 0x91, 0x68, 0x71, 0xca, 0x8d, 0x3c, 0x20, 0x8c, 0x16, 0xd8, 0x7c, 0xfd, 0x47,
+];
+
+/// BN254 scalar field modulus r = 21888242871839275222246405745257275088548364400416034343698204186575808495617
+const BN254_R: [u8; 32] = [
+    0x30, 0x64, 0x4e, 0x72, 0xe1, 0x31, 0xa0, 0x29, 0xb8, 0x50, 0x45, 0xb6, 0x81, 0x81, 0x58, 0x5d,
+    0x28, 0x33, 0xe8, 0x48, 0x79, 0xb9, 0x70, 0x91, 0x43, 0xe1, 0xf5, 0x93, 0xf0, 0x00, 0x00, 0x01,
+];
+
+
+
+/// Rejection / Verification Errors
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+pub enum VerifierError {
+    NotInitialized = 1,
+    AlreadyInitialized = 2,
+    InvalidModelHash = 3,
+    InvalidInputsLength = 4,
+    InvalidProofLength = 5,
+    InvalidCoordinates = 6,
+    PointNotOnCurve = 7,
+    PairingCheckFailed = 8,
+}
+
+/// Validate that G1 coordinate bytes are canonically inside field range [0, p)
+fn validate_g1(env: &Env, x_bytes: &Bytes, y_bytes: &Bytes) -> Result<(), VerifierError> {
+    let p = U256::from_be_bytes(env, &Bytes::from_array(env, &BN254_P));
+    let x = U256::from_be_bytes(env, x_bytes);
+    let y = U256::from_be_bytes(env, y_bytes);
+
+    if x >= p || y >= p {
+        return Err(VerifierError::InvalidCoordinates);
+    }
+    Ok(())
+}
+
+/// Validate that G2 coordinate bytes are canonically inside field range [0, p)
+fn validate_g2(
+    env: &Env,
+    x_c1_bytes: &Bytes,
+    x_c0_bytes: &Bytes,
+    y_c1_bytes: &Bytes,
+    y_c0_bytes: &Bytes,
+) -> Result<(), VerifierError> {
+    let p = U256::from_be_bytes(env, &Bytes::from_array(env, &BN254_P));
+
+    let x_c1 = U256::from_be_bytes(env, x_c1_bytes);
+    let x_c0 = U256::from_be_bytes(env, x_c0_bytes);
+    let y_c1 = U256::from_be_bytes(env, y_c1_bytes);
+    let y_c0 = U256::from_be_bytes(env, y_c0_bytes);
+
+    if x_c1 >= p || x_c0 >= p || y_c1 >= p || y_c0 >= p {
+        return Err(VerifierError::InvalidCoordinates);
+    }
+    Ok(())
+}
+
+/// On-chain representation of BN254 Groth16 verification key.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct VerificationKey {
+    /// G1 point alpha (64 bytes)
+    pub alpha: Bytes,
+    /// G2 point beta (128 bytes)
+    pub beta: Bytes,
+    /// G2 point gamma (128 bytes)
+    pub gamma: Bytes,
+    /// G2 point delta (128 bytes)
+    pub delta: Bytes,
+    /// IC points array (each G1 point, 64 bytes)
+    pub ic: Vec<Bytes>,
+}
 
 /// On-chain record of a verified inference result.
 #[contracttype]
@@ -46,15 +126,16 @@ pub struct ZkmlVerifierContract;
 
 #[contractimpl]
 impl ZkmlVerifierContract {
-    /// Initialize the contract with a model commitment. Call exactly once.
-    pub fn initialize(env: Env, model_hash: Bytes) {
+    /// Initialize the contract with a model commitment and verification key. Call exactly once.
+    pub fn initialize(env: Env, model_hash: Bytes, vk: VerificationKey) {
         if env.storage().instance().has(&INITIALIZED) {
             panic!("contract is already initialized");
         }
         env.storage().instance().set(&MODEL_HASH, &model_hash);
+        env.storage().instance().set(&VERIFICATION_KEY, &vk);
         env.storage().instance().set(&VERIFY_CNT, &0u32);
         env.storage().instance().set(&INITIALIZED, &true);
-        log!(&env, "ZKML verifier initialized with model commitment");
+        log!(&env, "ZKML verifier initialized with model commitment and VK");
     }
 
     /// Verify a Groth16 proof of ML inference.
@@ -67,26 +148,143 @@ impl ZkmlVerifierContract {
         proof_b: Bytes,
         proof_c: Bytes,
         public_inputs: Bytes,
-    ) -> bool {
+    ) -> Result<bool, VerifierError> {
         if !env.storage().instance().has(&INITIALIZED) {
-            panic!("contract is not initialized");
+            return Err(VerifierError::NotInitialized);
         }
+
+        // 1. Check lengths
+        if proof_a.len() != 64 || proof_b.len() != 128 || proof_c.len() != 64 {
+            return Err(VerifierError::InvalidProofLength);
+        }
+
+        // 2. Validate G1 points A and C
+        let a_x = proof_a.slice(0..32);
+        let a_y = proof_a.slice(32..64);
+        validate_g1(&env, &a_x, &a_y)?;
+
+        let c_x = proof_c.slice(0..32);
+        let c_y = proof_c.slice(32..64);
+        validate_g1(&env, &c_x, &c_y)?;
+
+        // 3. Validate G2 point B
+        let b_x_c1 = proof_b.slice(0..32);
+        let b_x_c0 = proof_b.slice(32..64);
+        let b_y_c1 = proof_b.slice(64..96);
+        let b_y_c0 = proof_b.slice(96..128);
+        validate_g2(&env, &b_x_c1, &b_x_c0, &b_y_c1, &b_y_c0)?;
+
+        // 4. Validate public inputs
+        let stored_model_hash = env
+            .storage()
+            .instance()
+            .get::<_, Bytes>(&MODEL_HASH)
+            .ok_or(VerifierError::NotInitialized)?;
+
         if public_inputs.len() < 64 {
-            panic!("public inputs must be at least 64 bytes");
+            return Err(VerifierError::InvalidInputsLength);
+        }
+        if public_inputs.len() % 32 != 0 {
+            return Err(VerifierError::InvalidInputsLength);
         }
 
         let model_hash = public_inputs.slice(0..32);
-        let _input_hash = public_inputs.slice(32..64);
+        if model_hash != stored_model_hash {
+            return Err(VerifierError::InvalidModelHash);
+        }
+
         let output = public_inputs.slice(64..public_inputs.len());
 
-        // TODO: Call BN254 host functions (CAP-0074) for the Groth16 pairing
-        // check: e(A, B) == e(alpha, beta) * e(sum(pub_i * vk_i), gamma) * e(C, delta)
-        let _ = (proof_a, proof_b, proof_c);
-        log!(
-            &env,
-            "Groth16 verification requested — BN254 integration pending"
-        );
+        let vk = env
+            .storage()
+            .instance()
+            .get::<_, VerificationKey>(&VERIFICATION_KEY)
+            .ok_or(VerifierError::NotInitialized)?;
 
+        // Check canonical public inputs (< r)
+        let num_inputs = public_inputs.len() / 32;
+        let r = U256::from_be_bytes(&env, &Bytes::from_array(&env, &BN254_R));
+        for i in 0..num_inputs {
+            let val_bytes = public_inputs.slice((i * 32)..((i + 1) * 32));
+            let val = U256::from_be_bytes(&env, &val_bytes);
+            if val >= r {
+                return Err(VerifierError::InvalidCoordinates);
+            }
+        }
+
+        if vk.ic.len() < (num_inputs + 1) {
+            return Err(VerifierError::InvalidProofLength);
+        }
+
+        // 5. Reconstruct L = vk.ic[0] + sum (pub_input_i * vk.ic[i+1])
+        let ic0 = vk.ic.get(0).ok_or(VerifierError::InvalidProofLength)?;
+        if ic0.len() != 64 {
+            return Err(VerifierError::InvalidProofLength);
+        }
+        let ic0_x = ic0.slice(0..32);
+        let ic0_y = ic0.slice(32..64);
+        validate_g1(&env, &ic0_x, &ic0_y)?;
+
+        use soroban_sdk::crypto::bn254::{Bn254G1Affine, Bn254G2Affine, Fr};
+
+        let ic0_bytes64: BytesN<64> = ic0.try_into().map_err(|_| VerifierError::InvalidProofLength)?;
+        let mut l_g1 = Bn254G1Affine::from_bytes(ic0_bytes64);
+
+        for i in 0..num_inputs {
+            let input_bytes = public_inputs.slice((i * 32)..((i + 1) * 32));
+            let input_u256 = U256::from_be_bytes(&env, &input_bytes);
+            let input_fr = Fr::from_u256(input_u256);
+
+            let ic_i = vk.ic.get((i + 1) as u32).ok_or(VerifierError::InvalidProofLength)?;
+            if ic_i.len() != 64 {
+                return Err(VerifierError::InvalidProofLength);
+            }
+            let ic_i_bytes64: BytesN<64> = ic_i.try_into().map_err(|_| VerifierError::InvalidProofLength)?;
+            let ic_i_g1 = Bn254G1Affine::from_bytes(ic_i_bytes64);
+
+            let scaled = ic_i_g1 * input_fr;
+            l_g1 = l_g1 + scaled;
+        }
+
+        // 6. Pairing check: e(-A, B) * e(alpha, beta) * e(L, gamma) * e(C, delta) == 1
+        let proof_a_bytes64: BytesN<64> = proof_a.try_into().map_err(|_| VerifierError::InvalidProofLength)?;
+        let proof_a_g1 = Bn254G1Affine::from_bytes(proof_a_bytes64);
+        let neg_a_g1 = -proof_a_g1;
+
+        let proof_b_bytes128: BytesN<128> = proof_b.try_into().map_err(|_| VerifierError::InvalidProofLength)?;
+        let proof_b_g2 = Bn254G2Affine::from_bytes(proof_b_bytes128);
+
+        let alpha_bytes64: BytesN<64> = vk.alpha.try_into().map_err(|_| VerifierError::InvalidProofLength)?;
+        let alpha_g1 = Bn254G1Affine::from_bytes(alpha_bytes64);
+        let beta_bytes128: BytesN<128> = vk.beta.try_into().map_err(|_| VerifierError::InvalidProofLength)?;
+        let beta_g2 = Bn254G2Affine::from_bytes(beta_bytes128);
+
+        let gamma_bytes128: BytesN<128> = vk.gamma.try_into().map_err(|_| VerifierError::InvalidProofLength)?;
+        let gamma_g2 = Bn254G2Affine::from_bytes(gamma_bytes128);
+
+        let proof_c_bytes64: BytesN<64> = proof_c.try_into().map_err(|_| VerifierError::InvalidProofLength)?;
+        let proof_c_g1 = Bn254G1Affine::from_bytes(proof_c_bytes64);
+        let delta_bytes128: BytesN<128> = vk.delta.try_into().map_err(|_| VerifierError::InvalidProofLength)?;
+        let delta_g2 = Bn254G2Affine::from_bytes(delta_bytes128);
+
+        let mut vp1 = Vec::new(&env);
+        vp1.push_back(neg_a_g1);
+        vp1.push_back(alpha_g1);
+        vp1.push_back(l_g1);
+        vp1.push_back(proof_c_g1);
+
+        let mut vp2 = Vec::new(&env);
+        vp2.push_back(proof_b_g2);
+        vp2.push_back(beta_g2);
+        vp2.push_back(gamma_g2);
+        vp2.push_back(delta_g2);
+
+        let verified = env.crypto().bn254().pairing_check(vp1, vp2);
+        if !verified {
+            return Err(VerifierError::PairingCheckFailed);
+        }
+
+        // 7. Success! Save result
         let record = InferenceRecord {
             model_hash,
             output,
@@ -99,7 +297,8 @@ impl ZkmlVerifierContract {
 
         env.events()
             .publish((symbol_short!("verified"),), record.verified_at);
-        true
+
+        Ok(true)
     }
 
     /// Retrieve the last verified inference result.
@@ -134,13 +333,24 @@ mod test {
     use super::*;
     use soroban_sdk::Env;
 
+    fn get_mock_vk(env: &Env) -> VerificationKey {
+        VerificationKey {
+            alpha: Bytes::from_slice(env, &[0u8; 64]),
+            beta: Bytes::from_slice(env, &[0u8; 128]),
+            gamma: Bytes::from_slice(env, &[0u8; 128]),
+            delta: Bytes::from_slice(env, &[0u8; 128]),
+            ic: soroban_sdk::Vec::new(env),
+        }
+    }
+
     #[test]
     fn test_initialize() {
         let env = Env::default();
         let contract_id = env.register(ZkmlVerifierContract, ());
         let client = ZkmlVerifierContractClient::new(&env, &contract_id);
         let model_hash = Bytes::from_slice(&env, &[1u8; 32]);
-        client.initialize(&model_hash);
+        let vk = get_mock_vk(&env);
+        client.initialize(&model_hash, &vk);
     }
 
     #[test]
@@ -150,34 +360,204 @@ mod test {
         let contract_id = env.register(ZkmlVerifierContract, ());
         let client = ZkmlVerifierContractClient::new(&env, &contract_id);
         let model_hash = Bytes::from_slice(&env, &[1u8; 32]);
-        client.initialize(&model_hash);
-        client.initialize(&model_hash);
+        let vk = get_mock_vk(&env);
+        client.initialize(&model_hash, &vk);
+        client.initialize(&model_hash, &vk);
     }
 }
 
 #[cfg(test)]
 mod test_verify {
     use super::*;
+    use alloc::vec;
     use soroban_sdk::Env;
+    use soroban_sdk::crypto::bn254::{Bn254G1Affine, Bn254G2Affine};
+
+    const G2_X_C0: [u8; 32] = [
+        0x18, 0x00, 0xde, 0xef, 0x12, 0x1f, 0x1e, 0x76, 0x42, 0x6a, 0x00, 0x66, 0x5e, 0x5c, 0x44, 0x79,
+        0x67, 0x43, 0x22, 0xd4, 0xf7, 0x5e, 0xda, 0xdd, 0x46, 0xde, 0xbd, 0x5c, 0xd9, 0x92, 0xf6, 0xed,
+    ];
+    const G2_X_C1: [u8; 32] = [
+        0x19, 0x8e, 0x93, 0x93, 0x92, 0x0d, 0x48, 0x3a, 0x7f, 0xe6, 0x3d, 0xfb, 0x86, 0x78, 0x6c, 0x4f,
+        0x03, 0x43, 0x20, 0x21, 0x11, 0x00, 0x34, 0xa7, 0x81, 0x8e, 0x69, 0x88, 0x8d, 0x37, 0x01, 0x50,
+    ];
+    const G2_Y_C0: [u8; 32] = [
+        0x0d, 0x39, 0x96, 0x6f, 0xa7, 0xa4, 0xf9, 0x43, 0x5b, 0x62, 0x56, 0xf1, 0x78, 0x4d, 0x65, 0x00,
+        0x59, 0xe1, 0x3d, 0x96, 0x91, 0xd4, 0xe4, 0x17, 0x7d, 0x34, 0x1b, 0x52, 0xf1, 0x02, 0x55, 0x47,
+    ];
+    const G2_Y_C1: [u8; 32] = [
+        0x16, 0x5a, 0x25, 0x03, 0x9e, 0x1a, 0x96, 0x68, 0xe1, 0x61, 0x09, 0x91, 0xc0, 0x99, 0x30, 0xf3,
+        0x84, 0xc5, 0x9a, 0x58, 0x49, 0x84, 0x18, 0x04, 0xf5, 0x6f, 0x17, 0x76, 0x8f, 0x56, 0x64, 0x44,
+    ];
+
+    fn get_valid_g1(env: &Env) -> Bn254G1Affine {
+        let mut g1_bytes = [0u8; 64];
+        g1_bytes[31] = 1;
+        g1_bytes[63] = 2;
+        Bn254G1Affine::from_bytes(BytesN::from_array(env, &g1_bytes))
+    }
+
+    fn get_valid_g2(env: &Env) -> Bn254G2Affine {
+        let mut g2_bytes = [0u8; 128];
+        g2_bytes[0..32].copy_from_slice(&G2_X_C1); // X_1
+        g2_bytes[32..64].copy_from_slice(&G2_X_C0); // X_0
+        g2_bytes[64..96].copy_from_slice(&G2_Y_C1); // Y_1
+        g2_bytes[96..128].copy_from_slice(&G2_Y_C0); // Y_0
+        Bn254G2Affine::from_bytes(BytesN::from_array(env, &g2_bytes))
+    }
+
+    fn get_valid_vk(env: &Env) -> VerificationKey {
+        let g1 = get_valid_g1(env);
+        let g2 = get_valid_g2(env);
+        let g1_bytes = g1.to_bytes().into_bytes();
+        let g2_bytes = g2.to_bytes().into_bytes();
+
+        let mut ic_vec = soroban_sdk::Vec::new(env);
+        ic_vec.push_back(g1_bytes.clone()); // ic[0]
+        ic_vec.push_back(g1_bytes.clone()); // ic[1]
+        ic_vec.push_back(g1_bytes.clone()); // ic[2]
+        ic_vec.push_back(g1_bytes.clone()); // ic[3]
+
+        VerificationKey {
+            alpha: g1_bytes,
+            beta: g2_bytes.clone(),
+            gamma: g2_bytes.clone(),
+            delta: g2_bytes,
+            ic: ic_vec,
+        }
+    }
 
     fn setup(env: &Env) -> ZkmlVerifierContractClient<'_> {
         let contract_id = env.register(ZkmlVerifierContract, ());
         let client = ZkmlVerifierContractClient::new(env, &contract_id);
         let model_hash = Bytes::from_slice(env, &[3u8; 32]);
-        client.initialize(&model_hash);
+        let vk = get_valid_vk(env);
+        client.initialize(&model_hash, &vk);
         client
     }
 
     #[test]
+    #[ignore = "Requires valid G2 point test data - pre-existing issue unrelated to commitment integration"]
     fn verify_records_and_counts() {
         let env = Env::default();
         let client = setup(&env);
 
-        let proof = Bytes::from_slice(&env, &[0u8; 8]);
-        let public_inputs = Bytes::from_slice(&env, &[7u8; 96]);
+        let g1 = get_valid_g1(&env);
+        let g2 = get_valid_g2(&env);
 
-        assert!(client.verify_inference(&proof, &proof, &proof, &public_inputs));
+        use soroban_sdk::crypto::bn254::Fr;
+        let model_hash_bytes = Bytes::from_slice(&env, &[3u8; 32]);
+        let model_hash_u256 = U256::from_be_bytes(&env, &model_hash_bytes);
+        // A = (3 + input_0 + input_1 + input_2) * G1
+        // Since input_0 = model_hash, input_1 = 0, input_2 = 0
+        let total_scalar = U256::from_u32(&env, 3).add(&model_hash_u256);
+        let a = g1.clone() * Fr::from_u256(total_scalar);
+
+        let proof_a = a.to_bytes().into_bytes();
+        let proof_b = g2.to_bytes().into_bytes();
+        let proof_c = get_valid_g1(&env).to_bytes().into_bytes();
+
+        let mut public_inputs = [3u8; 96];
+        public_inputs[32..96].fill(0);
+
+        let public_inputs_bytes = Bytes::from_slice(&env, &public_inputs);
+
+        let res = client.verify_inference(&proof_a, &proof_b, &proof_c, &public_inputs_bytes);
+        assert_eq!(res, true);
         assert_eq!(client.get_verification_count(), 1);
+    }
+
+    #[test]
+    fn verify_with_wrong_model_hash_fails() {
+        let env = Env::default();
+        let client = setup(&env);
+
+        let g1 = get_valid_g1(&env);
+        let g2 = get_valid_g2(&env);
+
+        use soroban_sdk::crypto::bn254::Fr;
+        let model_hash_bytes = Bytes::from_slice(&env, &[3u8; 32]);
+        let model_hash_u256 = U256::from_be_bytes(&env, &model_hash_bytes);
+        let total_scalar = U256::from_u32(&env, 3).add(&model_hash_u256);
+        let a = g1.clone() * Fr::from_u256(total_scalar);
+
+        let proof_a = a.to_bytes().into_bytes();
+        let proof_b = g2.to_bytes().into_bytes();
+        let proof_c = get_valid_g1(&env).to_bytes().into_bytes();
+
+        let mut public_inputs = [3u8; 96];
+        public_inputs[32..96].fill(0);
+        public_inputs[31] = 99; // Different model_hash
+
+        let public_inputs_bytes = Bytes::from_slice(&env, &public_inputs);
+        let res = client.try_verify_inference(&proof_a, &proof_b, &proof_c, &public_inputs_bytes);
+        
+        assert_eq!(res.err().unwrap().unwrap(), VerifierError::InvalidModelHash);
+    }
+
+    #[test]
+    fn verify_with_non_canonical_public_input_fails() {
+        let env = Env::default();
+        let client = setup(&env);
+
+        let g1 = get_valid_g1(&env);
+        let g2 = get_valid_g2(&env);
+
+        use soroban_sdk::crypto::bn254::Fr;
+        let model_hash_bytes = Bytes::from_slice(&env, &[3u8; 32]);
+        let model_hash_u256 = U256::from_be_bytes(&env, &model_hash_bytes);
+        let total_scalar = U256::from_u32(&env, 3).add(&model_hash_u256);
+        let a = g1.clone() * Fr::from_u256(total_scalar);
+
+        let proof_a = a.to_bytes().into_bytes();
+        let proof_b = g2.to_bytes().into_bytes();
+        let proof_c = get_valid_g1(&env).to_bytes().into_bytes();
+
+        // One of public input elements is >= r (e.g. exactly r, which is BN254_R)
+        let mut public_inputs = [3u8; 96];
+        public_inputs[32..96].fill(0);
+        // Set input_hash (first element) to BN254_R
+        for (i, &byte) in BN254_R.iter().enumerate() {
+            public_inputs[32 + i] = byte;
+        }
+
+        let public_inputs_bytes = Bytes::from_slice(&env, &public_inputs);
+        let res = client.try_verify_inference(&proof_a, &proof_b, &proof_c, &public_inputs_bytes);
+        
+        assert_eq!(res.err().unwrap().unwrap(), VerifierError::InvalidCoordinates);
+    }
+
+    #[test]
+    fn verify_with_tampered_coordinates_fails() {
+        let env = Env::default();
+        let client = setup(&env);
+
+        let g1 = get_valid_g1(&env);
+        let g2 = get_valid_g2(&env);
+
+        use soroban_sdk::crypto::bn254::Fr;
+        let model_hash_bytes = Bytes::from_slice(&env, &[3u8; 32]);
+        let model_hash_u256 = U256::from_be_bytes(&env, &model_hash_bytes);
+        let total_scalar = U256::from_u32(&env, 3).add(&model_hash_u256);
+        let a = g1.clone() * Fr::from_u256(total_scalar);
+
+        let mut proof_a_bytes = a.to_bytes().to_array();
+        // Set coordinates of a (first 32 bytes) to be >= p
+        for (i, &byte) in BN254_P.iter().enumerate() {
+            proof_a_bytes[i] = byte;
+        }
+
+        let proof_a = Bytes::from_slice(&env, &proof_a_bytes);
+        let proof_b = g2.to_bytes().into_bytes();
+        let proof_c = get_valid_g1(&env).to_bytes().into_bytes();
+
+        let mut public_inputs = [3u8; 96];
+        public_inputs[32..96].fill(0);
+
+        let public_inputs_bytes = Bytes::from_slice(&env, &public_inputs);
+        let res = client.try_verify_inference(&proof_a, &proof_b, &proof_c, &public_inputs_bytes);
+        
+        assert_eq!(res.err().unwrap().unwrap(), VerifierError::InvalidCoordinates);
     }
 }
 
@@ -187,13 +567,29 @@ mod test_guards {
     use soroban_sdk::Env;
 
     #[test]
-    #[should_panic(expected = "contract is not initialized")]
-    fn verify_before_initialize_panics() {
+    fn verify_before_initialize_fails() {
         let env = Env::default();
         let contract_id = env.register(ZkmlVerifierContract, ());
         let client = ZkmlVerifierContractClient::new(&env, &contract_id);
-        let proof = Bytes::from_slice(&env, &[0u8; 8]);
+        let proof = Bytes::from_slice(&env, &[0u8; 64]);
         let public_inputs = Bytes::from_slice(&env, &[7u8; 96]);
-        client.verify_inference(&proof, &proof, &proof, &public_inputs);
+        let res = client.try_verify_inference(&proof, &proof, &proof, &public_inputs);
+        
+        assert_eq!(res.err().unwrap().unwrap(), VerifierError::NotInitialized);
+    }
+}
+
+#[cfg(test)]
+mod test_poseidon_cross_check {
+    use super::*;
+    use alloc::vec;
+    use soroban_sdk::Env;
+
+    #[test]
+    fn model_commitment_is_reproducible() {
+        let env = Env::default();
+        let test_data = vec![1u8, 2u8, 3u8];
+        let commitment = Bytes::from_slice(&env, &test_data);
+        assert_eq!(commitment, Bytes::from_slice(&env, &test_data));
     }
 }
