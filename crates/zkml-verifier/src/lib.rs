@@ -241,10 +241,7 @@ impl ZkmlVerifierContract {
             let input_u256 = U256::from_be_bytes(&env, &input_bytes);
             let input_fr = Fr::from_u256(input_u256);
 
-            let ic_i = vk
-                .ic
-                .get(i + 1)
-                .ok_or(VerifierError::InvalidProofLength)?;
+            let ic_i = vk.ic.get(i + 1).ok_or(VerifierError::InvalidProofLength)?;
             if ic_i.len() != 64 {
                 return Err(VerifierError::InvalidProofLength);
             }

@@ -81,7 +81,7 @@ The order matches the feature index order expected by the model.
 
 ## Sponge Construction
 
-The commitment uses the standard Poseidon sponge construction:
+The commitment uses the standard Poseidon sponge construction with state carried between permutations:
 
 ### Absorption Phase
 
@@ -91,14 +91,13 @@ The commitment uses the standard Poseidon sponge construction:
    - `state[2] = 0`
 
 2. For each input element (from serialization):
-   - If rate is full (2 elements available), absorb both:
-     - `state[1] = element_i`
-     - `state[2] = element_{i+1}`
-     - Apply Poseidon permutation
-   - If only one element remains, absorb it and pad with zero:
-     - `state[1] = element_last`
-     - `state[2] = 0`
-     - Apply Poseidon permutation
+   - Place element in rate element: `state[1 + rate_idx] = element`
+   - If rate is full (2 elements), apply Poseidon permutation
+   - The permutation output becomes the new capacity element: `state[0] = output`
+   - Reset rate elements to zero for next absorption
+   - Reset rate_idx to 0
+
+3. If there are remaining elements after loop, pad with zeros and permute
 
 ### Squeeze Phase
 
@@ -113,26 +112,43 @@ For inputs exceeding the rate (more than 2 elements), the sponge performs multip
 
 ```
 state = [domain_tag, 0, 0]
-for chunk in input.chunks(2) {
-    state[1] = chunk[0]
-    state[2] = chunk.get(1).unwrap_or(&0)
-    state = poseidon_permutation(state)
-}
+rate_idx = 0
+for elem in elements:
+    state[1 + rate_idx] = elem
+    rate_idx += 1
+    if rate_idx == 2:
+        output = poseidon_permutation(state)
+        state[0] = output  # capacity gets permuted output
+        state[1] = 0
+        state[2] = 0
+        rate_idx = 0
+if rate_idx > 0:
+    # pad remaining rate elements with zeros
+    while rate_idx < 2:
+        state[1 + rate_idx] = 0
+        rate_idx += 1
+    output = poseidon_permutation(state)
+    state[0] = output
 hash = state[0]
 ```
+
+The key property is that the capacity element carries state between permutations, ensuring the hash is order-sensitive and non-malleable.
 
 ## Field Element Conversion
 
 ### i64 to BN254 Fr
 
-FixedPoint values are stored as i64 integers. To convert to BN254 Fr field elements:
+FixedPoint values are stored as i64 integers. To convert to BN254 Fr field elements with injective sign preservation:
 
-1. Take the absolute value of the i64
-2. Convert to u64
-3. Interpret as a field element (since i64 max value < BN254 field order)
-4. For negative values, use the field's modular inverse (or store as signed integer and handle in circuit)
+1. For non-negative values: directly convert to Fr
+   - `Fr::from(v as u64)` for `v >= 0`
 
-**Implementation note**: The current implementation uses direct little-endian byte encoding of the i64 value, which is then interpreted as a field element. This works because the absolute value of any i64 fits within the BN254 field.
+2. For negative values: map to field_order - abs(value)
+   - `Fr::from(0u64) - Fr::from(abs(v))` for `v < 0`
+   - This ensures +w and -w produce different field elements
+   - The mapping is injective because the field order is much larger than i64 range
+
+**Implementation note**: This mapping preserves the sign information in the field element representation, ensuring that flipping the sign of any model parameter changes the commitment.
 
 ### BN254 Fr to Bytes
 
@@ -144,22 +160,47 @@ bytes = field_element.to_bytes_le()  // 32 bytes
 
 ## Off-Chain Implementation
 
-The off-chain implementation uses the `rs-soroban-poseidon` crate:
+The off-chain implementation uses the `light-poseidon` crate with manual sponge construction to match the CAP-0075 host function behavior:
 
 ```rust
-use soroban_poseidon::poseidon_hash;
-use soroban_sdk::{crypto::bn254::Bn254Fr, vec, Env, U256};
+use light_poseidon::{Poseidon, PoseidonHasher};
+use ark_bn254::Fr;
+use ark_ff::{BigInteger, PrimeField};
 
-// For model commitment (domain tag = 1)
-let env = Env::default();
-let elements: Vec<U256> = model_elements(model)
-    .into_iter()
-    .map(|v| U256::from_u64(&env, v.unsigned_abs()))
-    .collect();
-let hash = poseidon_hash::<3, Bn254Fr>(&env, &elements);
+// Initialize sponge state with domain tag in capacity element
+let mut state = [Fr::from(domain), Fr::from(0u64), Fr::from(0u64)];
+
+// Absorb elements in rate-sized chunks (rate=2 for t=3)
+let mut poseidon = Poseidon::<Fr>::new_circom(STATE_SIZE).unwrap();
+let mut rate_idx = 0;
+for elem in fr_elements.iter() {
+    state[1 + rate_idx] = *elem;
+    rate_idx += 1;
+    if rate_idx == rate {
+        // Rate is full, apply permutation
+        let output = poseidon.hash(&state).unwrap();
+        state[0] = output;  // capacity gets permuted output
+        state[1] = Fr::from(0u64);
+        state[2] = Fr::from(0u64);
+        rate_idx = 0;
+    }
+}
+
+// If there are remaining elements, pad with zeros and permute
+if rate_idx > 0 {
+    while rate_idx < rate {
+        state[1 + rate_idx] = Fr::from(0u64);
+        rate_idx += 1;
+    }
+    let output = poseidon.hash(&state).unwrap();
+    state[0] = output;
+}
+
+// Squeeze: return capacity element (state[0]) as the hash
+let hash_bytes = state[0].into_bigint().to_bytes_le();
 ```
 
-**Note**: The off-chain implementation must use the same parameters as the on-chain host function. The `rs-soroban-poseidon` crate provides the exact circomlib-compatible parameters for BN254.
+**Note**: The `light-poseidon` crate provides the circomlib-compatible Poseidon permutation. The manual sponge construction ensures the state is carried between permutations correctly, matching the behavior expected by the CAP-0075 host function.
 
 ## On-Chain Usage
 

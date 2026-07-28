@@ -44,38 +44,57 @@ const STATE_SIZE: usize = 3;
 fn poseidon_commit(elements: &[i64], domain: u64) -> Commitment {
     let rate = STATE_SIZE - 1; // rate = 2 for t=3
 
-    // Convert i64 elements to Fr field elements
-    let mut fr_elements: Vec<Fr> = elements
+    // Convert i64 elements to Fr field elements with sign preservation
+    // For injective mapping: negative values map to (field_order - abs(value))
+    // This ensures +w and -w produce different field elements
+    let fr_elements: Vec<Fr> = elements
         .iter()
         .map(|&v| {
-            // Convert i64 to u64, then to Fr
-            // For negative values, we use modular arithmetic
-            let abs_val = v.unsigned_abs();
-            Fr::from(abs_val)
+            if v >= 0 {
+                Fr::from(v as u64)
+            } else {
+                // Map negative to field_order - abs(v) for injective mapping
+                // Use modular subtraction: 0 - abs(v) in the field
+                let abs_val = v.unsigned_abs();
+                Fr::from(0u64) - Fr::from(abs_val)
+            }
         })
         .collect();
 
-    // Prepend domain tag for separation - this ensures it's hashed first
-    fr_elements.insert(0, Fr::from(domain));
+    // Initialize sponge state with domain tag in capacity element
+    // State: [capacity=domain_tag, rate[0]=0, rate[1]=0]
+    let mut state = [Fr::from(domain), Fr::from(0u64), Fr::from(0u64)];
 
-    // Sponge absorption: absorb elements in rate-sized chunks
-    let mut current_hash = Fr::from(0u64);
-
-    for chunk in fr_elements.chunks(rate) {
-        let mut poseidon = Poseidon::<Fr>::new_circom(rate).unwrap();
-        // Pad with zeros if chunk is smaller than rate
-        let mut input = chunk.to_vec();
-        while input.len() < rate {
-            input.push(Fr::from(0u64));
+    // Absorb elements in rate-sized chunks (rate=2 for t=3)
+    let mut poseidon = Poseidon::<Fr>::new_circom(STATE_SIZE).unwrap();
+    let mut rate_idx = 0;
+    for elem in fr_elements.iter() {
+        state[1 + rate_idx] = *elem;
+        rate_idx += 1;
+        if rate_idx == rate {
+            // Rate is full, apply permutation
+            // The hash function returns a single Fr element (the output)
+            // We use this as the new capacity element for the next round
+            let output = poseidon.hash(&state).unwrap();
+            state[0] = output;
+            state[1] = Fr::from(0u64);
+            state[2] = Fr::from(0u64);
+            rate_idx = 0;
         }
-        // Hash this chunk
-        let chunk_hash = poseidon.hash(&input).unwrap();
-        // Chain with previous hash (XOR or addition)
-        current_hash += chunk_hash;
     }
 
-    // Return final hash as bytes
-    let hash_bytes = current_hash.into_bigint().to_bytes_le();
+    // If there are remaining elements, pad with zeros and permute
+    if rate_idx > 0 {
+        while rate_idx < rate {
+            state[1 + rate_idx] = Fr::from(0u64);
+            rate_idx += 1;
+        }
+        let output = poseidon.hash(&state).unwrap();
+        state[0] = output;
+    }
+
+    // Squeeze: return capacity element (state[0]) as the hash
+    let hash_bytes = state[0].into_bigint().to_bytes_le();
     let mut result = [0u8; 32];
     result.copy_from_slice(&hash_bytes);
     result
