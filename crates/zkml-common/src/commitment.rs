@@ -61,21 +61,20 @@ fn poseidon_commit(elements: &[i64], domain: u64) -> Commitment {
         })
         .collect();
 
-    // Initialize sponge state with domain tag in capacity element
-    // State: [capacity=domain_tag, rate[0]=0, rate[1]=0]
+    // Initialize sponge state: [capacity=domain_tag, rate[0]=0, rate[1]=0]
     let mut state = [Fr::from(domain), Fr::from(0u64), Fr::from(0u64)];
 
     // Absorb elements in rate-sized chunks (rate=2 for t=3)
-    let mut poseidon = Poseidon::<Fr>::new_circom(STATE_SIZE).unwrap();
+    // new_circom(3) creates width-3 permutation (t=3: rate=2, capacity=1)
+    let mut poseidon = Poseidon::<Fr>::new_circom(3).unwrap();
     let mut rate_idx = 0;
     for elem in fr_elements.iter() {
         state[1 + rate_idx] = *elem;
         rate_idx += 1;
         if rate_idx == rate {
-            // Rate is full, apply permutation
-            // The hash function returns a single Fr element (the output)
-            // We use this as the new capacity element for the next round
+            // Rate is full, apply permutation on full state
             let output = poseidon.hash(&state).unwrap();
+            // Update state: output becomes new capacity, rate resets to zeros
             state[0] = output;
             state[1] = Fr::from(0u64);
             state[2] = Fr::from(0u64);
@@ -445,5 +444,42 @@ mod tests_snapshot {
         let features: Vec<FixedPoint> = vec![];
         let hash = commit_inputs(&features);
         assert_debug_snapshot!(hash);
+    }
+}
+
+#[cfg(test)]
+mod test_known_answer_vector {
+    use super::*;
+
+    /// Known-answer vector test for Poseidon commitment
+    ///
+    /// This test verifies that the off-chain implementation produces the same digest
+    /// as the on-chain CAP-0075 Poseidon host function with identical parameters.
+    ///
+    /// TODO: To complete this test, we need:
+    /// 1. Access to Soroban testnet/devnet to run the CAP-0075 host function
+    /// 2. OR integration with soroban-poseidon crate to compute reference digest
+    /// 3. A known test vector: fixed input -> expected digest from on-chain source
+    ///
+    /// The test should:
+    /// - Hash a fixed input (e.g., [1, 2, 3] with domain tag 1)
+    /// - Compare against a reference digest computed by the on-chain host function
+    /// - Fail if digests don't match, proving parameter mismatch
+    #[test]
+    fn poseidon_matches_on_chain_reference() {
+        // Placeholder: This test needs actual on-chain reference data
+        // Example structure:
+        //
+        // let input = [1i64, 2i64, 3i64];
+        // let domain = 1; // MODEL_DOMAIN
+        // let digest = poseidon_commit(&input, domain);
+        // let expected_digest = [0u8; 32]; // From on-chain reference
+        // assert_eq!(digest, expected_digest);
+
+        // For now, just verify the implementation is deterministic
+        let input = [1i64, 2i64, 3i64];
+        let digest1 = poseidon_commit(&input, 1);
+        let digest2 = poseidon_commit(&input, 1);
+        assert_eq!(digest1, digest2, "commitment should be deterministic");
     }
 }

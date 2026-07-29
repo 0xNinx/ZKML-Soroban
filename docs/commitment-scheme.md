@@ -171,13 +171,14 @@ use ark_ff::{BigInteger, PrimeField};
 let mut state = [Fr::from(domain), Fr::from(0u64), Fr::from(0u64)];
 
 // Absorb elements in rate-sized chunks (rate=2 for t=3)
-let mut poseidon = Poseidon::<Fr>::new_circom(STATE_SIZE).unwrap();
+// new_circom(3) creates width-3 permutation (t=3: rate=2, capacity=1)
+let mut poseidon = Poseidon::<Fr>::new_circom(3).unwrap();
 let mut rate_idx = 0;
 for elem in fr_elements.iter() {
     state[1 + rate_idx] = *elem;
     rate_idx += 1;
     if rate_idx == rate {
-        // Rate is full, apply permutation
+        // Rate is full, apply permutation on full state
         let output = poseidon.hash(&state).unwrap();
         state[0] = output;  // capacity gets permuted output
         state[1] = Fr::from(0u64);
@@ -200,7 +201,7 @@ if rate_idx > 0 {
 let hash_bytes = state[0].into_bigint().to_bytes_le();
 ```
 
-**Note**: The `light-poseidon` crate provides the circomlib-compatible Poseidon permutation. The manual sponge construction ensures the state is carried between permutations correctly, matching the behavior expected by the CAP-0075 host function.
+**Note**: The `light-poseidon` crate provides the circomlib-compatible Poseidon permutation. `new_circom(3)` instantiates a width-3 permutation (t=3 with rate=2, capacity=1, 8 full rounds, 57 partial rounds). The manual sponge construction ensures the state is carried between permutations correctly, matching the behavior expected by the CAP-0075 host function.
 
 ## On-Chain Usage
 
