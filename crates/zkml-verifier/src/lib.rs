@@ -342,8 +342,8 @@ mod test {
             0, 0, 0, 0, 0, 2,
         ];
         let g2_bytes = [0u8; 128];
-        let g1 = Bn254G1Affine::from_array(env, &g1_bytes);
-        let g2 = Bn254G2Affine::from_array(env, &g2_bytes);
+        let _g1 = Bn254G1Affine::from_array(env, &g1_bytes);
+        let _g2 = Bn254G2Affine::from_array(env, &g2_bytes);
 
         VerificationKey {
             alpha: Bytes::from_slice(env, &g1_bytes),
@@ -396,8 +396,8 @@ mod test_guards {
             0, 0, 0, 0, 0, 2,
         ];
         let g2_bytes = [0u8; 128];
-        let g1 = Bn254G1Affine::from_array(env, &g1_bytes);
-        let g2 = Bn254G2Affine::from_array(env, &g2_bytes);
+        let _g1 = Bn254G1Affine::from_array(env, &g1_bytes);
+        let _g2 = Bn254G2Affine::from_array(env, &g2_bytes);
 
         VerificationKey {
             alpha: Bytes::from_slice(env, &g1_bytes),
@@ -473,8 +473,6 @@ mod test_guards {
         let proof_b = Bytes::from_slice(&env, &[0u8; 128]);
         let proof_c = Bytes::from_slice(&env, &[0u8; 8]); // Wrong length
         let public_inputs = Bytes::from_slice(&env, &[7u8; 96]);
-        let res = client.try_verify_inference(&proof, &proof, &proof, &public_inputs);
-
         let result = client.try_verify_inference(&proof_a, &proof_b, &proof_c, &public_inputs);
         // Should fail due to malformed proof_c (wrong length)
         assert!(result.is_err());
@@ -529,8 +527,8 @@ mod test_poseidon_cross_check {
             0, 0, 0, 0, 0, 2,
         ];
         let g2_bytes = [0u8; 128];
-        let g1 = Bn254G1Affine::from_array(env, &g1_bytes);
-        let g2 = Bn254G2Affine::from_array(env, &g2_bytes);
+        let _g1 = Bn254G1Affine::from_array(env, &g1_bytes);
+        let _g2 = Bn254G2Affine::from_array(env, &g2_bytes);
 
         VerificationKey {
             alpha: Bytes::from_slice(env, &g1_bytes),
