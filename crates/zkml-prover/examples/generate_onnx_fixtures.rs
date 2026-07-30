@@ -12,7 +12,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use prost::Message;
-use zkml_prover::onnx::{GraphProto, ModelProto, NodeProto, OperatorSetIdProto};
+use zkml_prover::onnx::{AttributeProto, GraphProto, ModelProto, NodeProto, OperatorSetIdProto};
 
 fn encode(model: &ModelProto) -> Vec<u8> {
     let mut buf = Vec::new();
@@ -27,6 +27,58 @@ fn node(name: &str, op_type: &str, domain: &str) -> NodeProto {
         domain: domain.into(),
         input: vec!["X".into()],
         output: vec!["Y".into()],
+        attribute: vec![],
+    }
+}
+
+fn linear_classifier_node(name: &str, coefficients: Vec<f32>, intercepts: Vec<f32>) -> NodeProto {
+    NodeProto {
+        name: name.into(),
+        op_type: "LinearClassifier".into(),
+        domain: "ai.onnx.ml".into(),
+        input: vec!["X".into()],
+        output: vec!["Y".into()],
+        attribute: vec![
+            AttributeProto {
+                name: "coefficients".into(),
+                floats: coefficients,
+                f: 0.0,
+                i: 0,
+                ints: vec![],
+                s: vec![],
+                strings: vec![],
+                t: None,
+                g: None,
+                sparse_tensor: None,
+                r#type: 0,
+            },
+            AttributeProto {
+                name: "intercepts".into(),
+                floats: intercepts,
+                f: 0.0,
+                i: 0,
+                ints: vec![],
+                s: vec![],
+                strings: vec![],
+                t: None,
+                g: None,
+                sparse_tensor: None,
+                r#type: 0,
+            },
+            AttributeProto {
+                name: "post_transform".into(),
+                floats: vec![],
+                f: 0.0,
+                i: 0,
+                ints: vec![],
+                s: b"NONE".to_vec(),
+                strings: vec![],
+                t: None,
+                g: None,
+                sparse_tensor: None,
+                r#type: 0,
+            },
+        ],
     }
 }
 
@@ -117,13 +169,18 @@ fn main() {
     fs::write(out.join("low_opset_tree.onnx"), encode(&low_opset)).unwrap();
 
     // Linear classifier: core 18 + ml 1 (LinearClassifier is ml opset 1 only).
+    // Binary classifier with 3 features.
     let linear = ModelProto {
         ir_version: 8,
         producer_name: "zkml-fixture-generator".into(),
         opset_import: opsets(18, 1),
         graph: Some(GraphProto {
             name: "logistic".into(),
-            node: vec![node("linear", "LinearClassifier", "ai.onnx.ml")],
+            node: vec![linear_classifier_node(
+                "linear",
+                vec![0.5, -0.3, 0.8], // 3 coefficients
+                vec![0.1],            // 1 intercept (binary)
+            )],
         }),
         ..Default::default()
     };
