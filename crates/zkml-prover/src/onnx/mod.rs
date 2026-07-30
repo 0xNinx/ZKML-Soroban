@@ -21,11 +21,13 @@
 //! silently ignoring nodes.
 
 mod error;
+mod extract;
 mod proto;
 mod validate;
 
 pub use error::OnnxImportError;
-pub use proto::{GraphProto, ModelProto, NodeProto, OperatorSetIdProto};
+pub use extract::extract_linear_classifier;
+pub use proto::{AttributeProto, GraphProto, ModelProto, NodeProto, OperatorSetIdProto};
 pub use validate::{MIN_OPSET_CORE, MIN_OPSET_ML};
 
 use prost::Message;
@@ -52,8 +54,7 @@ pub const SUPPORTED_OPERATORS: &[&str] = &[
 ///
 /// Performs protobuf decoding, per-domain opset validation (core `>= 17`,
 /// `ai.onnx.ml` `>= 1`), and operator allowlist checks. When validation
-/// succeeds, returns [`OnnxImportError::ExtractionNotImplemented`] until
-/// parameter extraction lands in issues #5 / #6.
+/// succeeds, extracts model parameters into the internal representation.
 ///
 /// # Errors
 ///
@@ -62,14 +63,44 @@ pub const SUPPORTED_OPERATORS: &[&str] = &[
 /// - [`OnnxImportError::UnsupportedOpset`] if a known domain is below its floor.
 /// - [`OnnxImportError::UnsupportedOperator`] if a graph node uses an op
 ///   outside the allowlist.
-/// - [`OnnxImportError::ExtractionNotImplemented`] after successful validation.
+/// - [`OnnxImportError::MalformedModel`] if parameter extraction fails.
 pub fn import_onnx(bytes: &[u8]) -> Result<Model, OnnxImportError> {
     let model = parse_model_proto(bytes)?;
     validate_model(&model)?;
-    let hint = detect_architecture(&model);
-    Err(OnnxImportError::ExtractionNotImplemented {
-        architecture_hint: hint,
-    })
+
+    let graph = model
+        .graph
+        .as_ref()
+        .ok_or_else(|| OnnxImportError::MalformedModel("model has no graph".into()))?;
+
+    // For now, we only support single-operator graphs
+    if graph.node.len() != 1 {
+        return Err(OnnxImportError::MalformedModel(format!(
+            "Expected exactly 1 node, found {}",
+            graph.node.len()
+        )));
+    }
+
+    let node = &graph.node[0];
+
+    match node.op_type.as_str() {
+        "LinearClassifier" => {
+            let lr = extract_linear_classifier(node)?;
+            Ok(Model::LogisticRegression(lr))
+        }
+        "TreeEnsembleClassifier" => {
+            let hint = detect_architecture(&model);
+            Err(OnnxImportError::ExtractionNotImplemented {
+                architecture_hint: hint,
+            })
+        }
+        _ => {
+            let hint = detect_architecture(&model);
+            Err(OnnxImportError::ExtractionNotImplemented {
+                architecture_hint: hint,
+            })
+        }
+    }
 }
 
 /// Decode raw bytes into an ONNX `ModelProto` without further validation.
@@ -137,6 +168,7 @@ mod tests {
                         },
                         input: vec!["X".into()],
                         output: vec![format!("Y{i}")],
+                        attribute: vec![],
                     })
                     .collect(),
             }),
@@ -161,13 +193,15 @@ mod tests {
     }
 
     #[test]
-    fn valid_linear_reaches_extraction_not_implemented() {
+    fn linear_classifier_without_attributes_fails() {
         // LinearClassifier has only ever been ai.onnx.ml version 1.
+        // This test verifies that a LinearClassifier without coefficients/intercepts
+        // attributes fails with a MalformedModel error.
         let bytes = encode(&model_with(18, 1, &["LinearClassifier"]));
         let err = import_onnx(&bytes).unwrap_err();
         assert!(matches!(
             err,
-            OnnxImportError::ExtractionNotImplemented { .. }
+            OnnxImportError::MalformedModel(_) // Fails due to missing attributes
         ));
     }
 
@@ -175,9 +209,10 @@ mod tests {
     fn valid_mlp_ops_reaches_extraction_not_implemented() {
         let bytes = encode(&model_with(17, 1, &["MatMul", "Add", "Relu"]));
         let err = import_onnx(&bytes).unwrap_err();
+        // MLP has multiple nodes, which is not supported yet (single-operator graphs only)
         assert!(matches!(
             err,
-            OnnxImportError::ExtractionNotImplemented { .. }
+            OnnxImportError::MalformedModel(_) // Expected exactly 1 node, found 3
         ));
     }
 
