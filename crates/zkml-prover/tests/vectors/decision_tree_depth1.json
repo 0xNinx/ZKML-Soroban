@@ -1,0 +1,36 @@
+{
+  "description": "Depth-1 decision tree stump (single split) - tests both branches",
+  "model": {
+    "type": "DecisionTree",
+    "num_features": 1,
+    "nodes": [
+      {
+        "type": "Split",
+        "feature_index": 0,
+        "threshold": {"value": 32768, "scale": 16},
+        "left": 1,
+        "right": 2
+      },
+      {
+        "type": "Leaf",
+        "value": {"value": 0, "scale": 16}
+      },
+      {
+        "type": "Leaf",
+        "value": {"value": 65536, "scale": 16}
+      }
+    ]
+  },
+  "test_cases": [
+    {
+      "description": "Input below threshold (0.0 < 0.5) goes left to leaf 0",
+      "inputs": [{"value": 0, "scale": 16}],
+      "expected_output": {"value": 0, "scale": 16}
+    },
+    {
+      "description": "Input above threshold (1.0 > 0.5) goes right to leaf 1",
+      "inputs": [{"value": 65536, "scale": 16}],
+      "expected_output": {"value": 65536, "scale": 16}
+    }
+  ]
+}

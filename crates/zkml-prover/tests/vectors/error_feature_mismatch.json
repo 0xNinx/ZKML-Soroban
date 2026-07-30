@@ -1,0 +1,29 @@
+{
+  "description": "Error path: feature vector length mismatch",
+  "model": {
+    "type": "LogisticRegression",
+    "weights": [
+      {"value": 65536, "scale": 16},
+      {"value": 65536, "scale": 16}
+    ],
+    "bias": {"value": 0, "scale": 16}
+  },
+  "test_cases": [
+    {
+      "description": "Input has 1 feature but model expects 2 - should error",
+      "inputs": [
+        {"value": 65536, "scale": 16}
+      ],
+      "expected_error": "FeatureCountMismatch"
+    },
+    {
+      "description": "Input has 3 features but model expects 2 - should error",
+      "inputs": [
+        {"value": 65536, "scale": 16},
+        {"value": 65536, "scale": 16},
+        {"value": 65536, "scale": 16}
+      ],
+      "expected_error": "FeatureCountMismatch"
+    }
+  ]
+}
