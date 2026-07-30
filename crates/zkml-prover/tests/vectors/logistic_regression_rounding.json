@@ -1,0 +1,19 @@
+{
+  "description": "Logistic regression testing rounding behavior with non-exact negative products",
+  "model": {
+    "type": "LogisticRegression",
+    "weights": [
+      {"value": -65536, "scale": 16}
+    ],
+    "bias": {"value": 0, "scale": 16}
+  },
+  "test_cases": [
+    {
+      "description": "Non-exact negative product: -1.0 * 1.1 = -1.1 (tests rounding direction)",
+      "inputs": [
+        {"value": 72089, "scale": 16}
+      ],
+      "expected_output": {"value": -72089, "scale": 16}
+    }
+  ]
+}

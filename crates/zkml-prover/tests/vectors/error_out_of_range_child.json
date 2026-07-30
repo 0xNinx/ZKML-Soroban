@@ -1,0 +1,29 @@
+{
+  "description": "Error path: decision tree with out-of-range child index",
+  "model": {
+    "type": "DecisionTree",
+    "num_features": 1,
+    "nodes": [
+      {
+        "type": "Split",
+        "feature_index": 0,
+        "threshold": {"value": 32768, "scale": 16},
+        "left": 99,
+        "right": 2
+      },
+      {
+        "type": "Leaf",
+        "value": {"value": 0, "scale": 16}
+      }
+    ]
+  },
+  "test_cases": [
+    {
+      "description": "Tree has invalid child index (99) - should error during validation",
+      "inputs": [
+        {"value": 0, "scale": 16}
+      ],
+      "expected_error": "InvalidModel"
+    }
+  ]
+}
