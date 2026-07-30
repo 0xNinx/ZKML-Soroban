@@ -82,10 +82,9 @@ fn infer_logistic_regression(lr: &LogisticRegression, inputs: &[FixedPoint]) -> 
 /// Compute one dense layer: `out[j] = sum_i(weight[j,i] * in[i]) + bias[j]`.
 ///
 /// Weights are stored row-major as `weights[j * input_size + i]`.
-#[allow(clippy::needless_range_loop)]
-fn dense_forward(layer: &DenseLayer, inputs: &[FixedPoint]) -> Vec<FixedPoint> {
 /// Products use [`FixedPoint::checked_mul`] (i128 intermediate) and the
 /// accumulator uses [`FixedPoint::checked_add`].
+#[allow(clippy::needless_range_loop)]
 fn dense_forward(layer: &DenseLayer, inputs: &[FixedPoint]) -> Result<Vec<FixedPoint>, ZkmlError> {
     let scale = inputs.first().map(|x| x.scale).unwrap_or(16);
     let mut out = Vec::with_capacity(layer.output_size);
