@@ -79,60 +79,38 @@ Input features are serialized as a flat vector of FixedPoint values:
 
 The order matches the feature index order expected by the model.
 
-## Sponge Construction
+## Iterative Hashing Construction
 
-The commitment uses the standard Poseidon sponge construction with state carried between permutations:
+Since the Poseidon implementation has a fixed rate (2 elements for t=3), the commitment uses iterative hashing (Merkle-Damgard style) to handle arbitrary-length inputs:
 
-### Absorption Phase
+### Hashing Process
 
-1. Initialize state with capacity element (domain tag) and zeros:
-   - `state[0] = domain_tag` (1 for model, 2 for input)
-   - `state[1] = 0`
-   - `state[2] = 0`
+1. Initialize with domain tag as the starting hash:
+   - `current_hash = domain_tag` (1 for model, 2 for input)
 
-2. For each input element (from serialization):
-   - Place element in rate element: `state[1 + rate_idx] = element`
-   - If rate is full (2 elements), apply Poseidon permutation
-   - The permutation output becomes the new capacity element: `state[0] = output`
-   - Reset rate elements to zero for next absorption
-   - Reset rate_idx to 0
+2. For each chunk of rate-sized elements (2 elements for t=3):
+   - Create input vector: `[current_hash, chunk[0], chunk[1]]` (or padded with zeros)
+   - Apply Poseidon hash to get new hash: `current_hash = poseidon_hash(inputs)`
+   - The previous hash carries state between iterations
 
-3. If there are remaining elements after loop, pad with zeros and permute
+3. If the final chunk is smaller than rate, pad with zeros before hashing
 
-### Squeeze Phase
-
-1. After final permutation, extract the capacity element as the hash:
-   - `hash = state[0]`
-
-2. Convert the field element to 32 bytes (little-endian)
+4. The final `current_hash` is the commitment digest
 
 ### Multi-Round Absorption
 
-For inputs exceeding the rate (more than 2 elements), the sponge performs multiple absorption rounds:
+For inputs exceeding the rate (more than 2 elements), the iterative hashing performs multiple rounds:
 
 ```
-state = [domain_tag, 0, 0]
-rate_idx = 0
-for elem in elements:
-    state[1 + rate_idx] = elem
-    rate_idx += 1
-    if rate_idx == 2:
-        output = poseidon_permutation(state)
-        state[0] = output  # capacity gets permuted output
-        state[1] = 0
-        state[2] = 0
-        rate_idx = 0
-if rate_idx > 0:
-    # pad remaining rate elements with zeros
-    while rate_idx < 2:
-        state[1 + rate_idx] = 0
-        rate_idx += 1
-    output = poseidon_permutation(state)
-    state[0] = output
-hash = state[0]
+current_hash = domain_tag
+rate = 2  # rate = t - 1 = 2 for t=3
+for chunk in elements.chunks(rate):
+    inputs = [current_hash] + chunk + [0] * (rate - chunk.len())
+    current_hash = poseidon_hash(inputs)
+hash = current_hash
 ```
 
-The key property is that the capacity element carries state between permutations, ensuring the hash is order-sensitive and non-malleable.
+The key property is that each iteration's output becomes the next iteration's input, ensuring the hash is order-sensitive and non-malleable for arbitrary-length inputs.
 
 ## Field Element Conversion
 
@@ -160,48 +138,36 @@ bytes = field_element.to_bytes_le()  // 32 bytes
 
 ## Off-Chain Implementation
 
-The off-chain implementation uses the `light-poseidon` crate with manual sponge construction to match the CAP-0075 host function behavior:
+The off-chain implementation uses the `light-poseidon` crate with iterative hashing (Merkle-Damgard style) to handle arbitrary-length inputs:
 
 ```rust
 use light_poseidon::{Poseidon, PoseidonHasher};
 use ark_bn254::Fr;
 use ark_ff::{BigInteger, PrimeField};
 
-// Initialize sponge state with domain tag in capacity element
-let mut state = [Fr::from(domain), Fr::from(0u64), Fr::from(0u64)];
+// Create Poseidon instance with t=3 (rate=2, capacity=1)
+// new_circom(2) creates width t = 2 + 1 = 3
+let mut poseidon = Poseidon::<Fr>::new_circom(2).unwrap();
 
-// Absorb elements in rate-sized chunks (rate=2 for t=3)
-// new_circom(3) creates width-3 permutation (t=3: rate=2, capacity=1)
-let mut poseidon = Poseidon::<Fr>::new_circom(3).unwrap();
-let mut rate_idx = 0;
-for elem in fr_elements.iter() {
-    state[1 + rate_idx] = *elem;
-    rate_idx += 1;
-    if rate_idx == rate {
-        // Rate is full, apply permutation on full state
-        let output = poseidon.hash(&state).unwrap();
-        state[0] = output;  // capacity gets permuted output
-        state[1] = Fr::from(0u64);
-        state[2] = Fr::from(0u64);
-        rate_idx = 0;
+// Iterative hashing: chain hashes for inputs exceeding rate
+let rate = 2; // rate = t - 1 = 2 for t=3
+let mut current_hash = Fr::from(domain);
+
+for chunk in fr_elements.chunks(rate) {
+    let mut inputs = vec![current_hash];
+    inputs.extend(chunk.iter());
+    // Pad with zeros if chunk is smaller than rate
+    while inputs.len() < rate {
+        inputs.push(Fr::from(0u64));
     }
+    current_hash = poseidon.hash(&inputs).unwrap();
 }
 
-// If there are remaining elements, pad with zeros and permute
-if rate_idx > 0 {
-    while rate_idx < rate {
-        state[1 + rate_idx] = Fr::from(0u64);
-        rate_idx += 1;
-    }
-    let output = poseidon.hash(&state).unwrap();
-    state[0] = output;
-}
-
-// Squeeze: return capacity element (state[0]) as the hash
-let hash_bytes = state[0].into_bigint().to_bytes_le();
+// Convert Fr to bytes
+let hash_bytes = current_hash.into_bigint().to_bytes_le();
 ```
 
-**Note**: The `light-poseidon` crate provides the circomlib-compatible Poseidon permutation. `new_circom(3)` instantiates a width-3 permutation (t=3 with rate=2, capacity=1, 8 full rounds, 57 partial rounds). The manual sponge construction ensures the state is carried between permutations correctly, matching the behavior expected by the CAP-0075 host function.
+**Note**: The `light-poseidon` crate provides the circomlib-compatible Poseidon permutation. `new_circom(2)` instantiates a width-3 permutation (t=3 with rate=2, capacity=1, 8 full rounds, 57 partial rounds). Since the `hash()` method is fixed-arity and resets state between calls, we use iterative hashing (Merkle-Damgard style) where each chunk is hashed with the previous hash as input, chaining the results together. This provides a valid approach for arbitrary-length inputs with fixed-rate hash functions.
 
 ## On-Chain Usage
 

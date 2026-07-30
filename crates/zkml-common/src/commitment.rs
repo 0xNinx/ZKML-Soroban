@@ -23,7 +23,8 @@ const MODEL_DOMAIN: u64 = 1;
 const INPUT_DOMAIN: u64 = 2;
 
 /// State size for Poseidon (t=3: rate=2, capacity=1).
-/// This matches the circomlib implementation and rs-soroban-poseidon defaults.
+/// This matches the circomlib implementation and CAP-0075 defaults.
+/// Note: light-poseidon's new_circom(n) creates width t = n + 1, so new_circom(2) creates t=3.
 const STATE_SIZE: usize = 3;
 
 /// Compute a Poseidon commitment over a sequence of i64 field elements.
@@ -33,9 +34,9 @@ const STATE_SIZE: usize = 3;
 /// - S-box degree x^5
 /// - 8 full rounds, 57 partial rounds
 ///
-/// Domain separation is achieved by prepending the domain tag to the input stream,
-/// ensuring it affects the hash computation. For inputs exceeding the rate,
-/// we use a multi-round sponge construction.
+/// Domain separation is achieved by prepending the domain tag to the input stream.
+/// For inputs exceeding the rate, we use iterative hashing (Merkle-Damgard style):
+/// each chunk is hashed with the previous hash as input, chaining the results.
 ///
 /// # Arguments
 ///
@@ -54,46 +55,32 @@ fn poseidon_commit(elements: &[i64], domain: u64) -> Commitment {
                 Fr::from(v as u64)
             } else {
                 // Map negative to field_order - abs(v) for injective mapping
-                // Use modular subtraction: 0 - abs(v) in the field
                 let abs_val = v.unsigned_abs();
                 Fr::from(0u64) - Fr::from(abs_val)
             }
         })
         .collect();
 
-    // Initialize sponge state: [capacity=domain_tag, rate[0]=0, rate[1]=0]
-    let mut state = [Fr::from(domain), Fr::from(0u64), Fr::from(0u64)];
+    // Create Poseidon instance with t=3 (rate=2, capacity=1)
+    // new_circom(2) creates width t = 2 + 1 = 3
+    let mut poseidon = Poseidon::<Fr>::new_circom(2).unwrap();
 
-    // Absorb elements in rate-sized chunks (rate=2 for t=3)
-    // new_circom(3) creates width-3 permutation (t=3: rate=2, capacity=1)
-    let mut poseidon = Poseidon::<Fr>::new_circom(3).unwrap();
-    let mut rate_idx = 0;
-    for elem in fr_elements.iter() {
-        state[1 + rate_idx] = *elem;
-        rate_idx += 1;
-        if rate_idx == rate {
-            // Rate is full, apply permutation on full state
-            let output = poseidon.hash(&state).unwrap();
-            // Update state: output becomes new capacity, rate resets to zeros
-            state[0] = output;
-            state[1] = Fr::from(0u64);
-            state[2] = Fr::from(0u64);
-            rate_idx = 0;
+    // Iterative hashing: chain hashes for inputs exceeding rate
+    // Start with domain tag as initial hash
+    let mut current_hash = Fr::from(domain);
+    
+    for chunk in fr_elements.chunks(rate) {
+        let mut inputs = vec![current_hash];
+        inputs.extend(chunk.iter());
+        // Pad with zeros if chunk is smaller than rate
+        while inputs.len() < rate {
+            inputs.push(Fr::from(0u64));
         }
+        current_hash = poseidon.hash(&inputs).unwrap();
     }
 
-    // If there are remaining elements, pad with zeros and permute
-    if rate_idx > 0 {
-        while rate_idx < rate {
-            state[1 + rate_idx] = Fr::from(0u64);
-            rate_idx += 1;
-        }
-        let output = poseidon.hash(&state).unwrap();
-        state[0] = output;
-    }
-
-    // Squeeze: return capacity element (state[0]) as the hash
-    let hash_bytes = state[0].into_bigint().to_bytes_le();
+    // Convert Fr to bytes
+    let hash_bytes = current_hash.into_bigint().to_bytes_le();
     let mut result = [0u8; 32];
     result.copy_from_slice(&hash_bytes);
     result
@@ -104,8 +91,9 @@ fn poseidon_commit(elements: &[i64], domain: u64) -> Commitment {
 /// Host and zkVM guest must call this same function so journal public inputs
 /// match native cross-checks.
 ///
-/// This is now implemented using Poseidon with circomlib-compatible parameters
+/// This is implemented using Poseidon with circomlib-compatible parameters
 /// over BN254, matching the Soroban host function configuration from CAP-0075.
+/// For inputs exceeding the rate, iterative hashing (Merkle-Damgard style) is used.
 ///
 /// # Arguments
 ///
@@ -448,35 +436,21 @@ mod tests_snapshot {
 }
 
 #[cfg(test)]
-mod test_known_answer_vector {
+mod test_determinism {
     use super::*;
 
-    /// Known-answer vector test for Poseidon commitment
+    /// Determinism test for Poseidon commitment
     ///
-    /// This test verifies that the off-chain implementation produces the same digest
-    /// as the on-chain CAP-0075 Poseidon host function with identical parameters.
+    /// This test verifies that the off-chain implementation produces consistent
+    /// digests for the same input. This is a basic sanity check, not a cross-check
+    /// against the on-chain CAP-0075 host function.
     ///
-    /// TODO: To complete this test, we need:
+    /// TODO: To implement a true on-chain equivalence test, we need:
     /// 1. Access to Soroban testnet/devnet to run the CAP-0075 host function
     /// 2. OR integration with soroban-poseidon crate to compute reference digest
     /// 3. A known test vector: fixed input -> expected digest from on-chain source
-    ///
-    /// The test should:
-    /// - Hash a fixed input (e.g., [1, 2, 3] with domain tag 1)
-    /// - Compare against a reference digest computed by the on-chain host function
-    /// - Fail if digests don't match, proving parameter mismatch
     #[test]
-    fn poseidon_matches_on_chain_reference() {
-        // Placeholder: This test needs actual on-chain reference data
-        // Example structure:
-        //
-        // let input = [1i64, 2i64, 3i64];
-        // let domain = 1; // MODEL_DOMAIN
-        // let digest = poseidon_commit(&input, domain);
-        // let expected_digest = [0u8; 32]; // From on-chain reference
-        // assert_eq!(digest, expected_digest);
-
-        // For now, just verify the implementation is deterministic
+    fn poseidon_commitment_is_deterministic() {
         let input = [1i64, 2i64, 3i64];
         let digest1 = poseidon_commit(&input, 1);
         let digest2 = poseidon_commit(&input, 1);
