@@ -18,11 +18,11 @@
 
 #![no_std]
 
-use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, log, symbol_short, vec, Bytes, Env, Symbol,
-    Vec, U256,
-};
 use soroban_sdk::crypto::bn254::{Bn254Fr, Bn254G1Affine, Bn254G2Affine};
+use soroban_sdk::{
+    contract, contracterror, contractimpl, contracttype, log, symbol_short, vec, Bytes, Env,
+    Symbol, Vec, U256,
+};
 
 // Storage keys
 const MODEL_HASH: Symbol = symbol_short!("mdl_hash");
@@ -92,7 +92,10 @@ impl ZkmlVerifierContract {
         env.storage().instance().set(&VERIFICATION_KEY, &vk);
         env.storage().instance().set(&VERIFY_CNT, &0u32);
         env.storage().instance().set(&INITIALIZED, &true);
-        log!(&env, "ZKML verifier initialized with model commitment and verification key");
+        log!(
+            &env,
+            "ZKML verifier initialized with model commitment and verification key"
+        );
     }
 
     /// Verify a Groth16 proof of ML inference.
@@ -142,27 +145,39 @@ impl ZkmlVerifierContract {
 
         // Convert public inputs to field elements for L computation
         let bn254 = env.crypto().bn254();
-        
+
         // L = sum(public_input_i * vk_ic_i)
         // Public inputs: model_hash (32 bytes), input_hash (32 bytes), output (variable)
         // We need to convert these to Bn254Fr scalars
-        let mut l = vk.ic.get(0).ok_or(VerificationError::MalformedVerificationKey)?;
-        
+        let mut l = vk
+            .ic
+            .get(0)
+            .ok_or(VerificationError::MalformedVerificationKey)?;
+
         // Convert model_hash to scalar and multiply with ic[1]
         let model_scalar = Self::bytes_to_fr(&env, &model_hash);
-        let ic1 = vk.ic.get(1).ok_or(VerificationError::MalformedVerificationKey)?;
+        let ic1 = vk
+            .ic
+            .get(1)
+            .ok_or(VerificationError::MalformedVerificationKey)?;
         let term1 = bn254.g1_mul(&ic1, &model_scalar);
         l = bn254.g1_add(&l, &term1);
-        
+
         // Convert input_hash to scalar and multiply with ic[2]
         let input_scalar = Self::bytes_to_fr(&env, &input_hash);
-        let ic2 = vk.ic.get(2).ok_or(VerificationError::MalformedVerificationKey)?;
+        let ic2 = vk
+            .ic
+            .get(2)
+            .ok_or(VerificationError::MalformedVerificationKey)?;
         let term2 = bn254.g1_mul(&ic2, &input_scalar);
         l = bn254.g1_add(&l, &term2);
-        
+
         // Convert output to scalar and multiply with ic[3]
         let output_scalar = Self::bytes_to_fr(&env, &output);
-        let ic3 = vk.ic.get(3).ok_or(VerificationError::MalformedVerificationKey)?;
+        let ic3 = vk
+            .ic
+            .get(3)
+            .ok_or(VerificationError::MalformedVerificationKey)?;
         let term3 = bn254.g1_mul(&ic3, &output_scalar);
         l = bn254.g1_add(&l, &term3);
 
@@ -189,7 +204,7 @@ impl ZkmlVerifierContract {
 
         env.events()
             .publish((symbol_short!("verified"),), record.verified_at);
-        
+
         Ok(())
     }
 
@@ -261,13 +276,14 @@ mod test {
     fn create_dummy_vk(env: &Env) -> VerificationKey {
         // Use the G1 generator point (1, 2) which is valid
         let g1_bytes: [u8; 64] = [
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 2,
         ];
         let g2_bytes = [0u8; 128];
         let g1 = Bn254G1Affine::from_array(env, &g1_bytes);
         let g2 = Bn254G2Affine::from_array(env, &g2_bytes);
-        
+
         VerificationKey {
             alpha: g1.clone(),
             beta: g2.clone(),
@@ -308,13 +324,14 @@ mod test_verify {
     fn create_dummy_vk(env: &Env) -> VerificationKey {
         // Use the G1 generator point (1, 2) which is valid
         let g1_bytes: [u8; 64] = [
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 2,
         ];
         let g2_bytes = [0u8; 128];
         let g1 = Bn254G1Affine::from_array(env, &g1_bytes);
         let g2 = Bn254G2Affine::from_array(env, &g2_bytes);
-        
+
         VerificationKey {
             alpha: g1.clone(),
             beta: g2.clone(),
@@ -354,8 +371,9 @@ mod test_verify {
 
         // Use valid G1 generator point for proof_a and proof_c
         let g1_bytes: [u8; 64] = [
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 2,
         ];
         let proof_a = Bytes::from_slice(&env, &g1_bytes);
         let proof_b = Bytes::from_slice(&env, &[0u8; 8]); // Wrong length
@@ -374,8 +392,9 @@ mod test_verify {
 
         // Use valid G1 generator point for proof_a
         let g1_bytes: [u8; 64] = [
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 2,
         ];
         let proof_a = Bytes::from_slice(&env, &g1_bytes);
         let proof_b = Bytes::from_slice(&env, &[0u8; 128]);
@@ -406,7 +425,7 @@ mod test_verify {
         let env = Env::default();
         let contract_id = env.register(ZkmlVerifierContract, ());
         let client = ZkmlVerifierContractClient::new(&env, &contract_id);
-        
+
         // Initialize with model hash [3u8; 32]
         let model_hash = Bytes::from_slice(&env, &[3u8; 32]);
         let vk = create_dummy_vk(&env);
@@ -431,13 +450,14 @@ mod test_guards {
     fn create_dummy_vk(env: &Env) -> VerificationKey {
         // Use the G1 generator point (1, 2) which is valid
         let g1_bytes: [u8; 64] = [
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 2,
         ];
         let g2_bytes = [0u8; 128];
         let g1 = Bn254G1Affine::from_array(env, &g1_bytes);
         let g2 = Bn254G2Affine::from_array(env, &g2_bytes);
-        
+
         VerificationKey {
             alpha: g1.clone(),
             beta: g2.clone(),
@@ -456,7 +476,7 @@ mod test_guards {
         let proof_b = Bytes::from_slice(&env, &[0u8; 128]);
         let proof_c = Bytes::from_slice(&env, &[0u8; 64]);
         let public_inputs = Bytes::from_slice(&env, &[7u8; 96]);
-        
+
         let result = client.try_verify_inference(&proof_a, &proof_b, &proof_c, &public_inputs);
         assert_eq!(result, Err(Ok(VerificationError::ContractNotInitialized)));
     }
