@@ -1,19 +1,19 @@
 {
-  "description": "Logistic regression testing rounding behavior with non-exact negative products",
+  "description": "Logistic regression exercising the rounding direction of the fixed-point shift on a non-exact negative product",
   "model": {
     "type": "LogisticRegression",
     "weights": [
-      {"value": -65536, "scale": 16}
+      {"value": -6554, "scale": 16}
     ],
     "bias": {"value": 0, "scale": 16}
   },
   "test_cases": [
     {
-      "description": "Non-exact negative product: -1.0 * 1.1 = -1.1 (tests rounding direction)",
+      "description": "w=-0.1 (raw -6554), x=0.1 (raw 6554): product -6554*6554 = -42954916 is not a multiple of 2^16, so the arithmetic shift floors toward negative infinity to -656 (true value -655.36), not -655",
       "inputs": [
-        {"value": 72089, "scale": 16}
+        {"value": 6554, "scale": 16}
       ],
-      "expected_output": {"value": -72089, "scale": 16}
+      "expected_output": {"value": -656, "scale": 16}
     }
   ]
 }
