@@ -41,7 +41,7 @@ fn linear_classifier_node(name: &str, coefficients: Vec<f32>, intercepts: Vec<f3
         attribute: vec![
             AttributeProto {
                 name: "coefficients".into(),
-                floats: coefficients,
+                floats: coefficients.iter().map(|&x| x as f64).collect(),
                 f: 0.0,
                 i: 0,
                 ints: vec![],
@@ -49,12 +49,15 @@ fn linear_classifier_node(name: &str, coefficients: Vec<f32>, intercepts: Vec<f3
                 strings: vec![],
                 t: None,
                 g: None,
+                floats_f32: vec![],
+                ints_extra: vec![],
+                strings_bytes: vec![],
                 sparse_tensor: None,
                 r#type: 0,
             },
             AttributeProto {
                 name: "intercepts".into(),
-                floats: intercepts,
+                floats: intercepts.iter().map(|&x| x as f64).collect(),
                 f: 0.0,
                 i: 0,
                 ints: vec![],
@@ -62,6 +65,9 @@ fn linear_classifier_node(name: &str, coefficients: Vec<f32>, intercepts: Vec<f3
                 strings: vec![],
                 t: None,
                 g: None,
+                floats_f32: vec![],
+                ints_extra: vec![],
+                strings_bytes: vec![],
                 sparse_tensor: None,
                 r#type: 0,
             },
@@ -75,8 +81,84 @@ fn linear_classifier_node(name: &str, coefficients: Vec<f32>, intercepts: Vec<f3
                 strings: vec![],
                 t: None,
                 g: None,
+                floats_f32: vec![],
+                ints_extra: vec![],
+                strings_bytes: vec![],
                 sparse_tensor: None,
                 r#type: 0,
+            },
+        ],
+    }
+}
+
+fn tree_classifier_node(name: &str) -> NodeProto {
+    // Simple tree: if feature[0] <= 0.5 then leaf 0 else leaf 1
+    // Node 0: split on feature 0, threshold 0.5
+    // Node 1: leaf with value 0.0
+    // Node 2: leaf with value 1.0
+    NodeProto {
+        name: name.into(),
+        op_type: "TreeEnsembleClassifier".into(),
+        domain: "ai.onnx.ml".into(),
+        input: vec!["X".into()],
+        output: vec!["Y".into()],
+        attribute: vec![
+            // Tree structure attributes
+            AttributeProto {
+                name: "nodes_treeids".into(),
+                ints: vec![0, 0, 0], // All nodes in tree 0
+                ..Default::default()
+            },
+            AttributeProto {
+                name: "nodes_nodeids".into(),
+                ints: vec![0, 1, 2], // Node IDs
+                ..Default::default()
+            },
+            AttributeProto {
+                name: "nodes_featureids".into(),
+                ints: vec![0, 0, 0], // All on feature 0
+                ..Default::default()
+            },
+            AttributeProto {
+                name: "nodes_values".into(),
+                floats: vec![0.5, 0.0, 0.0], // Thresholds (leaf values are 0 in ONNX)
+                ..Default::default()
+            },
+            AttributeProto {
+                name: "nodes_modes".into(),
+                strings: vec!["BRANCH_LEQ".into(), "LEAF".into(), "LEAF".into()],
+                ..Default::default()
+            },
+            AttributeProto {
+                name: "nodes_truenodeids".into(),
+                ints: vec![1, 0, 0], // Child node IDs (not indices)
+                ..Default::default()
+            },
+            AttributeProto {
+                name: "nodes_falsenodeids".into(),
+                ints: vec![2, 0, 0], // Child node IDs (not indices)
+                ..Default::default()
+            },
+            // Class attributes for leaf values
+            AttributeProto {
+                name: "class_ids".into(),
+                ints: vec![0, 1], // Class indices
+                ..Default::default()
+            },
+            AttributeProto {
+                name: "class_weights".into(),
+                floats: vec![0.0, 1.0], // Actual leaf values
+                ..Default::default()
+            },
+            AttributeProto {
+                name: "class_nodeids".into(),
+                ints: vec![1, 2], // Which leaf nodes these weights belong to
+                ..Default::default()
+            },
+            AttributeProto {
+                name: "class_treeids".into(),
+                ints: vec![0, 0], // All in tree 0
+                ..Default::default()
             },
         ],
     }
@@ -107,11 +189,9 @@ fn main() {
         opset_import: opsets(17, 3),
         graph: Some(GraphProto {
             name: "decision_tree".into(),
-            node: vec![node(
-                "tree_ensemble",
-                "TreeEnsembleClassifier",
-                "ai.onnx.ml",
-            )],
+            input: vec![],
+            output: vec![],
+            node: vec![tree_classifier_node("tree_ensemble")],
         }),
         ..Default::default()
     };
@@ -125,11 +205,9 @@ fn main() {
         opset_import: opsets(17, 3),
         graph: Some(GraphProto {
             name: "SklearnDecisionTreeClassifier".into(),
-            node: vec![node(
-                "TreeEnsembleClassifier",
-                "TreeEnsembleClassifier",
-                "ai.onnx.ml",
-            )],
+            input: vec![],
+            output: vec![],
+            node: vec![tree_classifier_node("TreeEnsembleClassifier")],
         }),
         ..Default::default()
     };
@@ -145,6 +223,8 @@ fn main() {
         }],
         graph: Some(GraphProto {
             name: "cnn".into(),
+            input: vec![],
+            output: vec![],
             node: vec![node("conv0", "Conv", "")],
         }),
         ..Default::default()
@@ -158,11 +238,9 @@ fn main() {
         opset_import: opsets(13, 3),
         graph: Some(GraphProto {
             name: "old_tree".into(),
-            node: vec![node(
-                "tree_ensemble",
-                "TreeEnsembleClassifier",
-                "ai.onnx.ml",
-            )],
+            input: vec![],
+            output: vec![],
+            node: vec![tree_classifier_node("tree_ensemble")],
         }),
         ..Default::default()
     };
@@ -176,6 +254,8 @@ fn main() {
         opset_import: opsets(18, 1),
         graph: Some(GraphProto {
             name: "logistic".into(),
+            input: vec![],
+            output: vec![],
             node: vec![linear_classifier_node(
                 "linear",
                 vec![0.5, -0.3, 0.8], // 3 coefficients

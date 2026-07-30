@@ -23,16 +23,77 @@
 mod error;
 mod extract;
 mod proto;
+mod tree_extractor;
 mod validate;
 
 pub use error::OnnxImportError;
 pub use extract::extract_linear_classifier;
-pub use proto::{AttributeProto, GraphProto, ModelProto, NodeProto, OperatorSetIdProto};
+pub use proto::{
+    AttributeProto, GraphProto, ModelProto, NodeProto, OperatorSetIdProto, TensorDataType,
+    TensorShapeProto, TensorShapeProtoDimension, TensorTypeProto, TypeProto, ValueInfoProto,
+};
 pub use validate::{MIN_OPSET_CORE, MIN_OPSET_ML};
 
 use prost::Message;
 use validate::{check_operators, check_opset, detect_architecture};
 use zkml_common::models::Model;
+
+/// Extract the number of features from the model's input tensor shape.
+///
+/// Assumes the first input tensor is the feature vector and extracts its
+/// last dimension (for 2D tensors like [batch_size, num_features]).
+fn extract_num_features(model: &ModelProto) -> Result<usize, OnnxImportError> {
+    let graph = model
+        .graph
+        .as_ref()
+        .ok_or_else(|| OnnxImportError::MalformedModel("model has no graph".into()))?;
+
+    if graph.input.is_empty() {
+        return Err(OnnxImportError::MalformedModel(
+            "model has no input tensors".into(),
+        ));
+    }
+
+    let first_input = &graph.input[0];
+    let type_info = first_input
+        .r#type
+        .as_ref()
+        .ok_or_else(|| OnnxImportError::MalformedModel("input has no type info".into()))?;
+
+    let tensor_type = type_info
+        .tensor
+        .as_ref()
+        .ok_or_else(|| OnnxImportError::MalformedModel("input is not a tensor".into()))?;
+
+    let shape = tensor_type
+        .shape
+        .as_ref()
+        .ok_or_else(|| OnnxImportError::MalformedModel("input has no shape".into()))?;
+
+    if shape.dim.is_empty() {
+        return Err(OnnxImportError::MalformedModel(
+            "input shape has no dimensions".into(),
+        ));
+    }
+
+    // For 1D tensors [num_features], use the only dimension
+    // For 2D tensors [batch_size, num_features], use the last dimension
+    let last_dim = &shape.dim[shape.dim.len() - 1];
+
+    if last_dim.dim_value > 0 {
+        Ok(last_dim.dim_value as usize)
+    } else if !last_dim.dim_param.is_empty() {
+        // Symbolic dimension - cannot determine at import time
+        Err(OnnxImportError::MalformedModel(format!(
+            "input has symbolic dimension '{}', cannot determine num_features",
+            last_dim.dim_param
+        )))
+    } else {
+        Err(OnnxImportError::MalformedModel(
+            "input dimension has no value or parameter".into(),
+        ))
+    }
+}
 
 /// Minimum core ONNX opset version (`""` / `ai.onnx`).
 ///
@@ -63,6 +124,7 @@ pub const SUPPORTED_OPERATORS: &[&str] = &[
 /// - [`OnnxImportError::UnsupportedOpset`] if a known domain is below its floor.
 /// - [`OnnxImportError::UnsupportedOperator`] if a graph node uses an op
 ///   outside the allowlist.
+/// - [`OnnxImportError::ExtractionNotImplemented`] for operators not yet implemented.
 /// - [`OnnxImportError::MalformedModel`] if parameter extraction fails.
 pub fn import_onnx(bytes: &[u8]) -> Result<Model, OnnxImportError> {
     let model = parse_model_proto(bytes)?;
@@ -73,33 +135,34 @@ pub fn import_onnx(bytes: &[u8]) -> Result<Model, OnnxImportError> {
         .as_ref()
         .ok_or_else(|| OnnxImportError::MalformedModel("model has no graph".into()))?;
 
-    // For now, we only support single-operator graphs
+    // Determine the architecture and extract accordingly
+    let architecture = detect_architecture(&model);
+
+    // For now, only support single-operator models
     if graph.node.len() != 1 {
-        return Err(OnnxImportError::MalformedModel(format!(
-            "Expected exactly 1 node, found {}",
-            graph.node.len()
-        )));
+        return Err(OnnxImportError::MalformedModel(
+            "only single-operator models are supported".into(),
+        ));
     }
 
     let node = &graph.node[0];
 
     match node.op_type.as_str() {
+        "TreeEnsembleClassifier" => {
+            let num_features = extract_num_features(&model)?;
+            let tree = tree_extractor::extract_tree(node, num_features)?;
+            Ok(Model::DecisionTree(tree))
+        }
         "LinearClassifier" => {
             let lr = extract_linear_classifier(node)?;
             Ok(Model::LogisticRegression(lr))
         }
-        "TreeEnsembleClassifier" => {
-            let hint = detect_architecture(&model);
-            Err(OnnxImportError::ExtractionNotImplemented {
-                architecture_hint: hint,
-            })
-        }
-        _ => {
-            let hint = detect_architecture(&model);
-            Err(OnnxImportError::ExtractionNotImplemented {
-                architecture_hint: hint,
-            })
-        }
+        "MatMul" | "Add" | "Relu" => Err(OnnxImportError::ExtractionNotImplemented {
+            architecture_hint: architecture,
+        }),
+        _ => Err(OnnxImportError::UnsupportedOperator {
+            op_type: node.op_type.clone(),
+        }),
     }
 }
 
@@ -155,6 +218,8 @@ mod tests {
             ],
             graph: Some(GraphProto {
                 name: "test".into(),
+                input: vec![],
+                output: vec![],
                 node: ops
                     .iter()
                     .enumerate()
@@ -177,16 +242,14 @@ mod tests {
     }
 
     #[test]
-    fn valid_tree_reaches_extraction_not_implemented() {
+    fn valid_tree_extraction_fails_without_attributes() {
         // Realistic skl2onnx-like pair: core 17 + ml 3.
+        // This will fail because the test helper doesn't include tree attributes
         let bytes = encode(&model_with(17, 3, &["TreeEnsembleClassifier"]));
         let err = import_onnx(&bytes).unwrap_err();
         match err {
-            OnnxImportError::ExtractionNotImplemented { architecture_hint } => {
-                assert!(
-                    architecture_hint.to_lowercase().contains("tree"),
-                    "hint was: {architecture_hint}"
-                );
+            OnnxImportError::MalformedModel(_) => {
+                // Expected - missing tree attributes
             }
             other => panic!("unexpected error: {other}"),
         }
@@ -209,11 +272,8 @@ mod tests {
     fn valid_mlp_ops_reaches_extraction_not_implemented() {
         let bytes = encode(&model_with(17, 1, &["MatMul", "Add", "Relu"]));
         let err = import_onnx(&bytes).unwrap_err();
-        // MLP has multiple nodes, which is not supported yet (single-operator graphs only)
-        assert!(matches!(
-            err,
-            OnnxImportError::MalformedModel(_) // Expected exactly 1 node, found 3
-        ));
+        // Now expects MalformedModel because model lacks input tensors and has multiple operators
+        assert!(matches!(err, OnnxImportError::MalformedModel(_)));
     }
 
     #[test]
@@ -243,8 +303,9 @@ mod tests {
     fn realistic_ml_opset_is_accepted() {
         let bytes = encode(&model_with(17, 5, &["TreeEnsembleClassifier"]));
         let err = import_onnx(&bytes).unwrap_err();
+        // Now expects MalformedModel because model lacks input tensors
         assert!(
-            matches!(err, OnnxImportError::ExtractionNotImplemented { .. }),
+            matches!(err, OnnxImportError::MalformedModel(_)),
             "got {err}"
         );
     }
@@ -280,6 +341,8 @@ mod tests {
             }],
             graph: Some(GraphProto {
                 name: "empty".into(),
+                input: vec![],
+                output: vec![],
                 node: vec![],
             }),
             ..Default::default()
