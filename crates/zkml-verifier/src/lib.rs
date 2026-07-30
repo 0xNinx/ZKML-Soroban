@@ -518,6 +518,9 @@ mod test_poseidon_cross_check {
 
         let result = client.try_verify_inference(&proof_a, &proof_b, &proof_c, &public_inputs);
         assert_eq!(result, Err(Ok(VerificationError::ContractNotInitialized)));
+    }
+
+    #[test]
     fn model_commitment_is_reproducible() {
         let env = Env::default();
         let test_data = [1u8, 2u8, 3u8];
