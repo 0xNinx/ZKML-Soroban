@@ -30,7 +30,6 @@ const VERIFICATION_KEY: Symbol = symbol_short!("vk");
 const LAST_RESULT: Symbol = symbol_short!("lst_res");
 const INITIALIZED: Symbol = symbol_short!("init");
 const VERIFY_CNT: Symbol = symbol_short!("vrf_cnt");
-const VERIFICATION_KEY: Symbol = symbol_short!("vk_key");
 
 /// Contract interface version, bumped on breaking interface changes.
 pub const VERSION: u32 = 2;
@@ -90,22 +89,6 @@ pub struct InferenceRecord {
     pub verified_at: u32,
 }
 
-/// Groth16 verification key stored on-chain.
-#[derive(Clone)]
-#[contracttype]
-pub struct VerificationKey {
-    /// G1 point
-    pub alpha: Bn254G1Affine,
-    /// G2 point
-    pub beta: Bn254G2Affine,
-    /// G2 point
-    pub gamma: Bn254G2Affine,
-    /// G2 point
-    pub delta: Bn254G2Affine,
-    /// IC array for public input linear combination
-    pub ic: Vec<Bn254G1Affine>,
-}
-
 #[contract]
 pub struct ZkmlVerifierContract;
 
@@ -143,11 +126,11 @@ impl ZkmlVerifierContract {
         }
 
         // Validate public inputs
-        let stored_model_hash = env
+        let _stored_model_hash = env
             .storage()
             .instance()
             .get::<_, Bytes>(&MODEL_HASH)
-            .ok_or(VerifierError::NotInitialized)?;
+            .ok_or(VerificationError::ContractNotInitialized)?;
 
         if public_inputs.len() < 64 {
             return Err(VerificationError::PublicInputsTooShort);
@@ -183,46 +166,56 @@ impl ZkmlVerifierContract {
         // Convert public inputs to field elements for L computation
         let bn254 = env.crypto().bn254();
 
+        // Deserialize VK fields to BN254 types
+        let alpha_g1 = Self::deserialize_vk_alpha(&env, &vk.alpha)?;
+        let beta_g2 = Self::deserialize_vk_g2(&env, &vk.beta)?;
+        let gamma_g2 = Self::deserialize_vk_g2(&env, &vk.gamma)?;
+        let delta_g2 = Self::deserialize_vk_g2(&env, &vk.delta)?;
+
         // L = sum(public_input_i * vk_ic_i)
         // Public inputs: model_hash (32 bytes), input_hash (32 bytes), output (variable)
         // We need to convert these to Bn254Fr scalars
-        let mut l = vk
+        let ic0_bytes = vk
             .ic
             .get(0)
             .ok_or(VerificationError::MalformedVerificationKey)?;
+        let mut l = Self::deserialize_vk_ic(&env, &ic0_bytes)?;
 
         // Convert model_hash to scalar and multiply with ic[1]
         let model_scalar = Self::bytes_to_fr(&env, &model_hash);
-        let ic1 = vk
+        let ic1_bytes = vk
             .ic
             .get(1)
             .ok_or(VerificationError::MalformedVerificationKey)?;
+        let ic1 = Self::deserialize_vk_ic(&env, &ic1_bytes)?;
         let term1 = bn254.g1_mul(&ic1, &model_scalar);
         l = bn254.g1_add(&l, &term1);
 
         // Convert input_hash to scalar and multiply with ic[2]
         let input_scalar = Self::bytes_to_fr(&env, &input_hash);
-        let ic2 = vk
+        let ic2_bytes = vk
             .ic
             .get(2)
             .ok_or(VerificationError::MalformedVerificationKey)?;
+        let ic2 = Self::deserialize_vk_ic(&env, &ic2_bytes)?;
         let term2 = bn254.g1_mul(&ic2, &input_scalar);
         l = bn254.g1_add(&l, &term2);
 
         // Convert output to scalar and multiply with ic[3]
         let output_scalar = Self::bytes_to_fr(&env, &output);
-        let ic3 = vk
+        let ic3_bytes = vk
             .ic
             .get(3)
             .ok_or(VerificationError::MalformedVerificationKey)?;
+        let ic3 = Self::deserialize_vk_ic(&env, &ic3_bytes)?;
         let term3 = bn254.g1_mul(&ic3, &output_scalar);
         l = bn254.g1_add(&l, &term3);
 
         // Pairing check: e(A, B) == e(alpha, beta) * e(L, gamma) * e(C, delta)
         // Equivalent to: e(-A, B) * e(alpha, beta) * e(L, gamma) * e(C, delta) == 1
         let neg_a = -proof_a_g1;
-        let vp1 = vec![&env, neg_a, vk.alpha, l, proof_c_g1];
-        let vp2 = vec![&env, proof_b_g2, vk.beta, vk.gamma, vk.delta];
+        let vp1 = vec![&env, neg_a, alpha_g1, l, proof_c_g1];
+        let vp2 = vec![&env, proof_b_g2, beta_g2, gamma_g2, delta_g2];
 
         if !bn254.pairing_check(vp1, vp2) {
             return Err(VerificationError::VerificationFailed);
@@ -264,6 +257,36 @@ impl ZkmlVerifierContract {
         let mut array = [0u8; 128];
         bytes.copy_into_slice(&mut array);
         Ok(Bn254G2Affine::from_array(env, &array))
+    }
+
+    /// Deserialize VK alpha (G1) from Bytes.
+    fn deserialize_vk_alpha(env: &Env, bytes: &Bytes) -> Result<Bn254G1Affine, VerificationError> {
+        if bytes.len() != 64 {
+            return Err(VerificationError::MalformedVerificationKey);
+        }
+        let mut array = [0u8; 64];
+        bytes.copy_into_slice(&mut array);
+        Ok(Bn254G1Affine::from_array(env, &array))
+    }
+
+    /// Deserialize VK beta/gamma/delta (G2) from Bytes.
+    fn deserialize_vk_g2(env: &Env, bytes: &Bytes) -> Result<Bn254G2Affine, VerificationError> {
+        if bytes.len() != 128 {
+            return Err(VerificationError::MalformedVerificationKey);
+        }
+        let mut array = [0u8; 128];
+        bytes.copy_into_slice(&mut array);
+        Ok(Bn254G2Affine::from_array(env, &array))
+    }
+
+    /// Deserialize VK IC element (G1) from Bytes.
+    fn deserialize_vk_ic(env: &Env, bytes: &Bytes) -> Result<Bn254G1Affine, VerificationError> {
+        if bytes.len() != 64 {
+            return Err(VerificationError::MalformedVerificationKey);
+        }
+        let mut array = [0u8; 64];
+        bytes.copy_into_slice(&mut array);
+        Ok(Bn254G1Affine::from_array(env, &array))
     }
 
     /// Convert bytes to a Bn254Fr scalar field element.
@@ -323,11 +346,17 @@ mod test {
         let g2 = Bn254G2Affine::from_array(env, &g2_bytes);
 
         VerificationKey {
-            alpha: g1.clone(),
-            beta: g2.clone(),
-            gamma: g2.clone(),
-            delta: g2.clone(),
-            ic: vec![env, g1.clone(), g1.clone(), g1.clone(), g1],
+            alpha: Bytes::from_slice(env, &g1_bytes),
+            beta: Bytes::from_slice(env, &g2_bytes),
+            gamma: Bytes::from_slice(env, &g2_bytes),
+            delta: Bytes::from_slice(env, &g2_bytes),
+            ic: vec![
+                env,
+                Bytes::from_slice(env, &g1_bytes),
+                Bytes::from_slice(env, &g1_bytes),
+                Bytes::from_slice(env, &g1_bytes),
+                Bytes::from_slice(env, &g1_bytes),
+            ],
         }
     }
 
@@ -371,11 +400,17 @@ mod test_guards {
         let g2 = Bn254G2Affine::from_array(env, &g2_bytes);
 
         VerificationKey {
-            alpha: g1.clone(),
-            beta: g2.clone(),
-            gamma: g2.clone(),
-            delta: g2.clone(),
-            ic: vec![env, g1.clone(), g1.clone(), g1.clone(), g1],
+            alpha: Bytes::from_slice(env, &g1_bytes),
+            beta: Bytes::from_slice(env, &g2_bytes),
+            gamma: Bytes::from_slice(env, &g2_bytes),
+            delta: Bytes::from_slice(env, &g2_bytes),
+            ic: vec![
+                env,
+                Bytes::from_slice(env, &g1_bytes),
+                Bytes::from_slice(env, &g1_bytes),
+                Bytes::from_slice(env, &g1_bytes),
+                Bytes::from_slice(env, &g1_bytes),
+            ],
         }
     }
 
@@ -498,11 +533,17 @@ mod test_poseidon_cross_check {
         let g2 = Bn254G2Affine::from_array(env, &g2_bytes);
 
         VerificationKey {
-            alpha: g1.clone(),
-            beta: g2.clone(),
-            gamma: g2.clone(),
-            delta: g2.clone(),
-            ic: vec![env, g1.clone(), g1.clone(), g1.clone(), g1],
+            alpha: Bytes::from_slice(env, &g1_bytes),
+            beta: Bytes::from_slice(env, &g2_bytes),
+            gamma: Bytes::from_slice(env, &g2_bytes),
+            delta: Bytes::from_slice(env, &g2_bytes),
+            ic: vec![
+                env,
+                Bytes::from_slice(env, &g1_bytes),
+                Bytes::from_slice(env, &g1_bytes),
+                Bytes::from_slice(env, &g1_bytes),
+                Bytes::from_slice(env, &g1_bytes),
+            ],
         }
     }
 
