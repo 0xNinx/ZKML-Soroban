@@ -1,0 +1,21 @@
+{
+  "description": "Logistic regression with positive weights - produces positive score",
+  "model": {
+    "type": "LogisticRegression",
+    "weights": [
+      {"value": 65536, "scale": 16},
+      {"value": 131072, "scale": 16}
+    ],
+    "bias": {"value": 32768, "scale": 16}
+  },
+  "test_cases": [
+    {
+      "description": "Positive inputs with positive weights: 1.0*1.0 + 2.0*2.0 + 0.5 = 5.5",
+      "inputs": [
+        {"value": 65536, "scale": 16},
+        {"value": 131072, "scale": 16}
+      ],
+      "expected_output": {"value": 360448, "scale": 16}
+    }
+  ]
+}

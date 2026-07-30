@@ -1,0 +1,25 @@
+{
+  "description": "Degenerate decision tree - single Leaf root (no splits)",
+  "model": {
+    "type": "DecisionTree",
+    "num_features": 1,
+    "nodes": [
+      {
+        "type": "Leaf",
+        "value": {"value": 65536, "scale": 16}
+      }
+    ]
+  },
+  "test_cases": [
+    {
+      "description": "Any input returns the single leaf value (1.0)",
+      "inputs": [{"value": 0, "scale": 16}],
+      "expected_output": {"value": 65536, "scale": 16}
+    },
+    {
+      "description": "Different input still returns the single leaf value (1.0)",
+      "inputs": [{"value": 65536, "scale": 16}],
+      "expected_output": {"value": 65536, "scale": 16}
+    }
+  ]
+}

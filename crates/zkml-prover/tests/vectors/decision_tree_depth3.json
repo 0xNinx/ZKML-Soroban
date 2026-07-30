@@ -1,0 +1,68 @@
+{
+  "description": "Depth-3 decision tree - every leaf reachable by at least one test input",
+  "model": {
+    "type": "DecisionTree",
+    "num_features": 2,
+    "nodes": [
+      {
+        "type": "Split",
+        "feature_index": 0,
+        "threshold": {"value": 32768, "scale": 16},
+        "left": 1,
+        "right": 4
+      },
+      {
+        "type": "Split",
+        "feature_index": 1,
+        "threshold": {"value": 32768, "scale": 16},
+        "left": 2,
+        "right": 3
+      },
+      {
+        "type": "Leaf",
+        "value": {"value": 0, "scale": 16}
+      },
+      {
+        "type": "Leaf",
+        "value": {"value": 65536, "scale": 16}
+      },
+      {
+        "type": "Split",
+        "feature_index": 1,
+        "threshold": {"value": 32768, "scale": 16},
+        "left": 5,
+        "right": 6
+      },
+      {
+        "type": "Leaf",
+        "value": {"value": 131072, "scale": 16}
+      },
+      {
+        "type": "Leaf",
+        "value": {"value": 196608, "scale": 16}
+      }
+    ]
+  },
+  "test_cases": [
+    {
+      "description": "f0=0.0, f1=0.0 -> left-left-left -> leaf 0 (value 0.0)",
+      "inputs": [{"value": 0, "scale": 16}, {"value": 0, "scale": 16}],
+      "expected_output": {"value": 0, "scale": 16}
+    },
+    {
+      "description": "f0=0.0, f1=1.0 -> left-left-right -> leaf 1 (value 1.0)",
+      "inputs": [{"value": 0, "scale": 16}, {"value": 65536, "scale": 16}],
+      "expected_output": {"value": 65536, "scale": 16}
+    },
+    {
+      "description": "f0=1.0, f1=0.0 -> right-left -> leaf 2 (value 2.0)",
+      "inputs": [{"value": 65536, "scale": 16}, {"value": 0, "scale": 16}],
+      "expected_output": {"value": 131072, "scale": 16}
+    },
+    {
+      "description": "f0=1.0, f1=1.0 -> right-right -> leaf 3 (value 3.0)",
+      "inputs": [{"value": 65536, "scale": 16}, {"value": 65536, "scale": 16}],
+      "expected_output": {"value": 196608, "scale": 16}
+    }
+  ]
+}

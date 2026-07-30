@@ -6,6 +6,11 @@
 use crate::fixed_point::FixedPoint;
 
 /// Quantized ReLU: `max(0, x)`.
+///
+/// Implemented as a signed comparison on the raw Q16.16 integer
+/// (`if x.value < 0 { 0 } else { x }`), which mirrors the comparison plus
+/// conditional-select gadget the circuit uses. This is the single shared
+/// activation for both the native prover and the guest.
 pub fn relu(x: FixedPoint) -> FixedPoint {
     if x.value < 0 {
         FixedPoint::from_raw(0, x.scale)

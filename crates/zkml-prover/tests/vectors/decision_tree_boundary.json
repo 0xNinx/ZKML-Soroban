@@ -1,0 +1,41 @@
+{
+  "description": "Decision tree boundary behavior - input exactly equal to threshold",
+  "model": {
+    "type": "DecisionTree",
+    "num_features": 1,
+    "nodes": [
+      {
+        "type": "Split",
+        "feature_index": 0,
+        "threshold": {"value": 32768, "scale": 16},
+        "left": 1,
+        "right": 2
+      },
+      {
+        "type": "Leaf",
+        "value": {"value": 0, "scale": 16}
+      },
+      {
+        "type": "Leaf",
+        "value": {"value": 65536, "scale": 16}
+      }
+    ]
+  },
+  "test_cases": [
+    {
+      "description": "Input exactly at threshold (0.5 == 0.5) goes LEFT per <= semantics",
+      "inputs": [{"value": 32768, "scale": 16}],
+      "expected_output": {"value": 0, "scale": 16}
+    },
+    {
+      "description": "Input just below threshold (0.49999 < 0.5) goes left",
+      "inputs": [{"value": 32767, "scale": 16}],
+      "expected_output": {"value": 0, "scale": 16}
+    },
+    {
+      "description": "Input just above threshold (0.50001 > 0.5) goes right",
+      "inputs": [{"value": 32769, "scale": 16}],
+      "expected_output": {"value": 65536, "scale": 16}
+    }
+  ]
+}

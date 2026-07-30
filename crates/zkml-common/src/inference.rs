@@ -6,6 +6,7 @@
 //! duplicating the proven path between host and guest.
 
 use crate::activation::relu_vec;
+use crate::error::ZkmlError;
 use crate::fixed_point::FixedPoint;
 use crate::models::{DecisionTree, DenseLayer, LogisticRegression, Model, TinyMLP, TreeNode};
 
@@ -81,35 +82,66 @@ fn infer_logistic_regression(lr: &LogisticRegression, inputs: &[FixedPoint]) -> 
 /// Compute one dense layer: `out[j] = sum_i(weight[j,i] * in[i]) + bias[j]`.
 ///
 /// Weights are stored row-major as `weights[j * input_size + i]`.
-fn dense_forward(layer: &DenseLayer, inputs: &[FixedPoint]) -> Vec<FixedPoint> {
+/// Products use [`FixedPoint::checked_mul`] (i128 intermediate) and the
+/// accumulator uses [`FixedPoint::checked_add`].
+fn dense_forward(layer: &DenseLayer, inputs: &[FixedPoint]) -> Result<Vec<FixedPoint>, ZkmlError> {
     let scale = inputs.first().map(|x| x.scale).unwrap_or(16);
     let mut out = Vec::with_capacity(layer.output_size);
     for j in 0..layer.output_size {
-        let mut acc: i64 = layer.biases[j].value;
-        for i in 0..layer.input_size {
-            let w = layer.weights[j * layer.input_size + i].value;
-            acc += (w * inputs[i].value) >> scale;
+        let mut acc = layer.biases[j];
+        for (i, x) in inputs.iter().enumerate().take(layer.input_size) {
+            let w = layer.weights[j * layer.input_size + i];
+            let product = w.checked_mul(*x).ok_or(ZkmlError::ArithmeticOverflow)?;
+            acc = acc
+                .checked_add(product)
+                .ok_or(ZkmlError::ArithmeticOverflow)?;
         }
-        out.push(FixedPoint::from_raw(acc, scale));
+        // Preserve caller scale when bias/weights share it (the normal case).
+        out.push(FixedPoint::from_raw(acc.value, scale));
     }
-    out
+    Ok(out)
 }
 
 /// Run a forward pass through a tiny MLP using quantized ReLU between layers.
+///
+/// # Activation convention
+///
+/// Quantized ReLU (`max(0, x)`) is applied after **every layer except the
+/// last**. The final layer returns raw linear scores (no sigmoid/softmax),
+/// matching logistic regression's "omit the sigmoid" convention.
+/// [`run_inference`] exposes the first output neuron of that final layer;
+/// multi-class callers can use [`argmax`] on a full logits vector when the
+/// layer width is greater than one.
+///
+/// # Panics
+///
+/// Panics if a checked fixed-point multiply or add overflows. Prefer
+/// [`try_run_inference`] when overflow must be handled as an error.
 fn infer_tiny_mlp(mlp: &TinyMLP, inputs: &[FixedPoint]) -> FixedPoint {
+    try_infer_tiny_mlp(mlp, inputs).expect("TinyMLP inference overflow")
+}
+
+/// Fallible TinyMLP forward used by [`try_run_inference`].
+///
+/// See [`infer_tiny_mlp`] for the ReLU-after-hidden / raw-final-layer
+/// convention.
+fn try_infer_tiny_mlp(mlp: &TinyMLP, inputs: &[FixedPoint]) -> Result<FixedPoint, ZkmlError> {
     let mut activations: Vec<FixedPoint> = inputs.to_vec();
     let last = mlp.layers.len().saturating_sub(1);
     for (idx, layer) in mlp.layers.iter().enumerate() {
-        let mut out = dense_forward(layer, &activations);
+        let mut out = dense_forward(layer, &activations)?;
         if idx != last {
+            // Quantized ReLU after every hidden layer. The single shared
+            // implementation lives in `crate::activation` so the native
+            // prover and the guest apply the exact same activation.
             out = relu_vec(&out);
         }
         activations = out;
     }
-    activations
+    Ok(activations
         .first()
         .copied()
-        .unwrap_or(FixedPoint::from_raw(0, 16))
+        .unwrap_or(FixedPoint::from_raw(0, 16)))
 }
 
 #[cfg(test)]
@@ -193,12 +225,9 @@ mod tests_batch {
 }
 
 /// Validated inference that returns an error instead of panicking on a
-/// feature-count mismatch or empty input.
-pub fn try_run_inference(
-    model: &Model,
-    inputs: &[FixedPoint],
-) -> Result<FixedPoint, crate::error::ZkmlError> {
-    use crate::error::ZkmlError;
+/// feature-count mismatch, empty input, invalid TinyMLP topology, or
+/// fixed-point overflow.
+pub fn try_run_inference(model: &Model, inputs: &[FixedPoint]) -> Result<FixedPoint, ZkmlError> {
     if inputs.is_empty() {
         return Err(ZkmlError::FeatureCountMismatch {
             expected: model.num_features(),
@@ -212,7 +241,13 @@ pub fn try_run_inference(
             got: inputs.len(),
         });
     }
-    Ok(run_inference(model, inputs))
+    match model {
+        Model::TinyMLP(mlp) => {
+            mlp.validate()?;
+            try_infer_tiny_mlp(mlp, inputs)
+        }
+        _ => Ok(run_inference(model, inputs)),
+    }
 }
 
 #[cfg(test)]
