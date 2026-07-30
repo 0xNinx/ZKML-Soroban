@@ -7,6 +7,10 @@ license.workspace = true
 
 [dependencies]
 serde = { workspace = true }
+light-poseidon = "0.4"
+ark-bn254 = "0.5"
+ark-ff = "0.5"
 
 [dev-dependencies]
 proptest = "1.5"
+insta = "1.40"

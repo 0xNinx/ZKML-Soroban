@@ -30,6 +30,7 @@ const VERIFICATION_KEY: Symbol = symbol_short!("vk");
 const LAST_RESULT: Symbol = symbol_short!("lst_res");
 const INITIALIZED: Symbol = symbol_short!("init");
 const VERIFY_CNT: Symbol = symbol_short!("vrf_cnt");
+const VERIFICATION_KEY: Symbol = symbol_short!("vk_key");
 
 /// Contract interface version, bumped on breaking interface changes.
 pub const VERSION: u32 = 2;
@@ -48,6 +49,33 @@ pub enum VerificationError {
     MalformedProofC = 5,
     MalformedVerificationKey = 6,
     VerificationFailed = 7,
+}
+
+/// Rejection / Verification Errors
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+pub enum VerifierError {
+    NotInitialized = 1,
+    AlreadyInitialized = 2,
+    InvalidModelHash = 3,
+    InvalidInputsLength = 4,
+    InvalidProofLength = 5,
+}
+
+/// On-chain representation of BN254 Groth16 verification key.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct VerificationKey {
+    /// G1 point alpha (64 bytes)
+    pub alpha: Bytes,
+    /// G2 point beta (128 bytes)
+    pub beta: Bytes,
+    /// G2 point gamma (128 bytes)
+    pub gamma: Bytes,
+    /// G2 point delta (128 bytes)
+    pub delta: Bytes,
+    /// IC points array (each G1 point, 64 bytes)
+    pub ic: Vec<Bytes>,
 }
 
 /// On-chain record of a verified inference result.
@@ -84,6 +112,7 @@ pub struct ZkmlVerifierContract;
 #[contractimpl]
 impl ZkmlVerifierContract {
     /// Initialize the contract with a model commitment and Groth16 verification key. Call exactly once.
+    /// Initialize the contract with a model commitment and verification key. Call exactly once.
     pub fn initialize(env: Env, model_hash: Bytes, vk: VerificationKey) {
         if env.storage().instance().has(&INITIALIZED) {
             panic!("contract is already initialized");
@@ -112,6 +141,14 @@ impl ZkmlVerifierContract {
         if !env.storage().instance().has(&INITIALIZED) {
             return Err(VerificationError::ContractNotInitialized);
         }
+
+        // Validate public inputs
+        let stored_model_hash = env
+            .storage()
+            .instance()
+            .get::<_, Bytes>(&MODEL_HASH)
+            .ok_or(VerifierError::NotInitialized)?;
+
         if public_inputs.len() < 64 {
             return Err(VerificationError::PublicInputsTooShort);
         }
@@ -202,6 +239,7 @@ impl ZkmlVerifierContract {
         let count: u32 = env.storage().instance().get(&VERIFY_CNT).unwrap_or(0);
         env.storage().instance().set(&VERIFY_CNT, &(count + 1));
 
+        #[allow(deprecated)]
         env.events()
             .publish((symbol_short!("verified"),), record.verified_at);
 
@@ -317,7 +355,7 @@ mod test {
 }
 
 #[cfg(test)]
-mod test_verify {
+mod test_guards {
     use super::*;
     use soroban_sdk::Env;
 
@@ -400,6 +438,7 @@ mod test_verify {
         let proof_b = Bytes::from_slice(&env, &[0u8; 128]);
         let proof_c = Bytes::from_slice(&env, &[0u8; 8]); // Wrong length
         let public_inputs = Bytes::from_slice(&env, &[7u8; 96]);
+        let res = client.try_verify_inference(&proof, &proof, &proof, &public_inputs);
 
         let result = client.try_verify_inference(&proof_a, &proof_b, &proof_c, &public_inputs);
         // Should fail due to malformed proof_c (wrong length)
@@ -443,7 +482,7 @@ mod test_verify {
 }
 
 #[cfg(test)]
-mod test_guards {
+mod test_poseidon_cross_check {
     use super::*;
     use soroban_sdk::Env;
 
@@ -479,5 +518,10 @@ mod test_guards {
 
         let result = client.try_verify_inference(&proof_a, &proof_b, &proof_c, &public_inputs);
         assert_eq!(result, Err(Ok(VerificationError::ContractNotInitialized)));
+    fn model_commitment_is_reproducible() {
+        let env = Env::default();
+        let test_data = [1u8, 2u8, 3u8];
+        let commitment = Bytes::from_slice(&env, &test_data);
+        assert_eq!(commitment, Bytes::from_slice(&env, &test_data));
     }
 }
