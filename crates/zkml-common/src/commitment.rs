@@ -69,7 +69,7 @@ fn poseidon_commit(elements: &[i64], domain: u64) -> Commitment {
     // Start with domain tag as initial hash
     let mut current_hash = Fr::from(domain);
     let mut chunk_index = 0u64;
-    
+
     for chunk in fr_elements.chunks(rate) {
         let mut inputs = chunk.to_vec();
         // Pad with zeros if chunk is smaller than rate
