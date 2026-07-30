@@ -125,8 +125,9 @@ Off-chain component responsible for the full inference-to-proof pipeline.
 - Logistic regression: dot product of weight vector and input features plus
   bias. Sigmoid is omitted (not ZK-friendly); raw scores are compared against
   a threshold.
-- Tiny MLP (planned): sequential dense layer evaluation with quantized ReLU
-  activation (max(0, x) is efficiently expressible in circuits).
+- Tiny MLP: sequential dense layer evaluation with quantized ReLU after
+  every hidden layer (`max(0, x)` on the raw Q16.16 integer). The final
+  layer emits raw linear scores; products use checked Q16.16 multiply.
 
 ### zkml-verifier
 

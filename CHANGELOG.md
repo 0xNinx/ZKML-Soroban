@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- TinyMLP fixed-point inference with checked Q16.16 dense layers, ReLU on
+  hidden layers only, topology validation via `TinyMLP::validate` /
+  `try_run_inference`, and prover acceptance tests (hand-computed 2→2→1,
+  ReLU, shape errors, golden float bound).
 - ONNX importer foundation: protobuf parse, per-domain opset validation
   (core >= 17, ai.onnx.ml >= 1), operator allowlist, and typed
   `OnnxImportError` (parameter extraction deferred to #5/#6).
