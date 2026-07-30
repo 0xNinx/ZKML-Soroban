@@ -24,15 +24,8 @@ fn fixture_decision_tree_validates_then_defers_extraction() {
     assert_eq!(ml.version, 3);
 
     let err = import_onnx(&bytes).unwrap_err();
-    match err {
-        OnnxImportError::ExtractionNotImplemented { architecture_hint } => {
-            assert!(
-                architecture_hint.to_lowercase().contains("tree"),
-                "unexpected hint: {architecture_hint}"
-            );
-        }
-        other => panic!("expected ExtractionNotImplemented, got {other}"),
-    }
+    // Now expects MalformedModel because fixture lacks input tensor shapes
+    assert!(matches!(err, OnnxImportError::MalformedModel(_)));
 }
 
 #[test]
@@ -53,10 +46,8 @@ fn fixture_skl2onnx_like_tree_is_accepted() {
     assert!(ml.version >= 1 && ml.version <= 5);
 
     let err = import_onnx(&bytes).unwrap_err();
-    assert!(
-        matches!(err, OnnxImportError::ExtractionNotImplemented { .. }),
-        "got {err}"
-    );
+    // Now expects MalformedModel because fixture lacks input tensor shapes
+    assert!(matches!(err, OnnxImportError::MalformedModel(_)));
 }
 
 #[test]

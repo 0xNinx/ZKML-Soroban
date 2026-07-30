@@ -220,6 +220,8 @@ mod tests {
     fn operator_check_reports_first_offender() {
         let graph = GraphProto {
             name: "g".into(),
+            input: vec![],
+            output: vec![],
             node: vec![
                 NodeProto {
                     op_type: "MatMul".into(),
