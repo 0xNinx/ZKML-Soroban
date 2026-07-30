@@ -121,3 +121,70 @@ mod tests_report {
         assert!(report.max_error < 1e-4);
     }
 }
+
+/// Test that quantized weights deviate from the float originals by < 2⁻¹⁶ each.
+#[cfg(test)]
+mod tests_quantization_accuracy {
+    use super::*;
+
+    #[test]
+    fn quantization_error_less_than_2_minus_16() {
+        // 2⁻¹⁶ ≈ 1.5259e-5
+        const MAX_ALLOWED_ERROR: f64 = 1.0 / 65536.0; // 2⁻¹⁶
+
+        let test_values = vec![
+            0.0, 1.0, -1.0, 0.5, -0.5, 0.1, -0.1, 0.25, -0.25, 100.0, -100.0, 0.01, -0.01, 3.14159,
+            -3.14159,
+        ];
+
+        for &value in &test_values {
+            let quantized = FixedPoint::quantize(value);
+            let dequantized = quantized.dequantize();
+            let error = (value - dequantized).abs();
+
+            assert!(
+                error < MAX_ALLOWED_ERROR,
+                "Quantization error {} for value {} exceeds 2⁻¹⁶ ({})",
+                error,
+                value,
+                MAX_ALLOWED_ERROR
+            );
+        }
+    }
+
+    #[test]
+    fn weight_vector_quantization_accuracy() {
+        const MAX_ALLOWED_ERROR: f64 = 1.0 / 65536.0; // 2⁻¹⁶
+
+        let weights = vec![0.5, -0.3, 0.8, 0.1, -0.2];
+        let quantized = quantize_weights(&weights);
+
+        for (orig, q) in weights.iter().zip(quantized.iter()) {
+            let dequantized = q.dequantize();
+            let error = (orig - dequantized).abs();
+
+            assert!(
+                error < MAX_ALLOWED_ERROR,
+                "Weight quantization error {} for original {} exceeds 2⁻¹⁶",
+                error,
+                orig
+            );
+        }
+    }
+
+    #[test]
+    fn bias_quantization_accuracy() {
+        const MAX_ALLOWED_ERROR: f64 = 1.0 / 65536.0; // 2⁻¹⁶
+
+        let bias = 0.12345;
+        let quantized = quantize_bias(bias);
+        let dequantized = quantized.dequantize();
+        let error = (bias - dequantized).abs();
+
+        assert!(
+            error < MAX_ALLOWED_ERROR,
+            "Bias quantization error {} exceeds 2⁻¹⁶",
+            error
+        );
+    }
+}
