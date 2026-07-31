@@ -50,17 +50,6 @@ pub enum VerificationError {
     VerificationFailed = 7,
 }
 
-/// Rejection / Verification Errors
-#[contracterror]
-#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
-pub enum VerifierError {
-    NotInitialized = 1,
-    AlreadyInitialized = 2,
-    InvalidModelHash = 3,
-    InvalidInputsLength = 4,
-    InvalidProofLength = 5,
-}
-
 /// On-chain representation of BN254 Groth16 verification key.
 #[contracttype]
 #[derive(Clone, Debug)]
@@ -124,13 +113,6 @@ impl ZkmlVerifierContract {
         if !env.storage().instance().has(&INITIALIZED) {
             return Err(VerificationError::ContractNotInitialized);
         }
-
-        // Validate public inputs
-        let _stored_model_hash = env
-            .storage()
-            .instance()
-            .get::<_, Bytes>(&MODEL_HASH)
-            .ok_or(VerificationError::ContractNotInitialized)?;
 
         if public_inputs.len() < 64 {
             return Err(VerificationError::PublicInputsTooShort);
@@ -290,14 +272,31 @@ impl ZkmlVerifierContract {
     }
 
     /// Convert bytes to a Bn254Fr scalar field element.
+    /// 
+    /// Byte-to-field mapping: Right-aligned big-endian interpretation.
+    /// If bytes.len() > 32, the leftmost bytes are truncated (only the rightmost 32 bytes are used).
+    /// If bytes.len() < 32, the value is effectively zero-padded on the left.
+    /// 
+    /// IMPORTANT: The prover MUST use the same byte-to-field mapping when computing public inputs.
+    /// The 32-byte value is interpreted as a big-endian integer and reduced modulo the BN254
+    /// scalar field order r by the Bn254Fr constructor. This is the standard reduction.
     fn bytes_to_fr(env: &Env, bytes: &Bytes) -> Bn254Fr {
+        let n = bytes.len();
         let mut array = [0u8; 32];
-        let len = bytes.len().min(32) as usize;
-        bytes.copy_into_slice(&mut array);
-        // Pad with zeros if less than 32 bytes
-        for i in len..32 {
-            array[i] = 0;
+        
+        // Copy bytes right-aligned into the 32-byte array
+        // If n > 32, take the rightmost 32 bytes (truncate left)
+        // If n <= 32, align to the right (zero-pad left)
+        let start = if n > 32 { n - 32 } else { 0 };
+        let copy_len = n.min(32);
+        let array_start = 32 - copy_len;
+        
+        for i in 0..copy_len {
+            if let Some(byte) = bytes.get(start + i) {
+                array[(array_start + i) as usize] = byte;
+            }
         }
+        
         let bytes_ref = Bytes::from_slice(env, &array);
         U256::from_be_bytes(env, &bytes_ref).into()
     }
@@ -330,12 +329,13 @@ impl ZkmlVerifierContract {
 }
 
 #[cfg(test)]
-mod test {
+mod test_utils {
     use super::*;
     use soroban_sdk::Env;
 
-    fn create_dummy_vk(env: &Env) -> VerificationKey {
-        // Use the G1 generator point (1, 2) which is valid
+    /// Create a dummy verification key for testing.
+    /// Uses the G1 generator point (1, 2) which is valid.
+    pub fn create_dummy_vk(env: &Env) -> VerificationKey {
         let g1_bytes: [u8; 64] = [
             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
             0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -359,6 +359,13 @@ mod test {
             ],
         }
     }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use soroban_sdk::Env;
+    use test_utils::create_dummy_vk;
 
     #[test]
     fn test_initialize() {
@@ -387,32 +394,7 @@ mod test {
 mod test_guards {
     use super::*;
     use soroban_sdk::Env;
-
-    fn create_dummy_vk(env: &Env) -> VerificationKey {
-        // Use the G1 generator point (1, 2) which is valid
-        let g1_bytes: [u8; 64] = [
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 2,
-        ];
-        let g2_bytes = [0u8; 128];
-        let _g1 = Bn254G1Affine::from_array(env, &g1_bytes);
-        let _g2 = Bn254G2Affine::from_array(env, &g2_bytes);
-
-        VerificationKey {
-            alpha: Bytes::from_slice(env, &g1_bytes),
-            beta: Bytes::from_slice(env, &g2_bytes),
-            gamma: Bytes::from_slice(env, &g2_bytes),
-            delta: Bytes::from_slice(env, &g2_bytes),
-            ic: vec![
-                env,
-                Bytes::from_slice(env, &g1_bytes),
-                Bytes::from_slice(env, &g1_bytes),
-                Bytes::from_slice(env, &g1_bytes),
-                Bytes::from_slice(env, &g1_bytes),
-            ],
-        }
-    }
+    use test_utils::create_dummy_vk;
 
     fn setup(env: &Env) -> ZkmlVerifierContractClient<'_> {
         let contract_id = env.register(ZkmlVerifierContract, ());
@@ -518,32 +500,6 @@ mod test_guards {
 mod test_poseidon_cross_check {
     use super::*;
     use soroban_sdk::Env;
-
-    fn create_dummy_vk(env: &Env) -> VerificationKey {
-        // Use the G1 generator point (1, 2) which is valid
-        let g1_bytes: [u8; 64] = [
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 2,
-        ];
-        let g2_bytes = [0u8; 128];
-        let _g1 = Bn254G1Affine::from_array(env, &g1_bytes);
-        let _g2 = Bn254G2Affine::from_array(env, &g2_bytes);
-
-        VerificationKey {
-            alpha: Bytes::from_slice(env, &g1_bytes),
-            beta: Bytes::from_slice(env, &g2_bytes),
-            gamma: Bytes::from_slice(env, &g2_bytes),
-            delta: Bytes::from_slice(env, &g2_bytes),
-            ic: vec![
-                env,
-                Bytes::from_slice(env, &g1_bytes),
-                Bytes::from_slice(env, &g1_bytes),
-                Bytes::from_slice(env, &g1_bytes),
-                Bytes::from_slice(env, &g1_bytes),
-            ],
-        }
-    }
 
     #[test]
     fn verify_before_initialize_returns_error() {
