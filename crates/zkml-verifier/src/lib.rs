@@ -272,31 +272,31 @@ impl ZkmlVerifierContract {
     }
 
     /// Convert bytes to a Bn254Fr scalar field element.
-    /// 
+    ///
     /// Byte-to-field mapping: Right-aligned big-endian interpretation.
     /// If bytes.len() > 32, the leftmost bytes are truncated (only the rightmost 32 bytes are used).
     /// If bytes.len() < 32, the value is effectively zero-padded on the left.
-    /// 
+    ///
     /// IMPORTANT: The prover MUST use the same byte-to-field mapping when computing public inputs.
     /// The 32-byte value is interpreted as a big-endian integer and reduced modulo the BN254
     /// scalar field order r by the Bn254Fr constructor. This is the standard reduction.
     fn bytes_to_fr(env: &Env, bytes: &Bytes) -> Bn254Fr {
         let n = bytes.len();
         let mut array = [0u8; 32];
-        
+
         // Copy bytes right-aligned into the 32-byte array
         // If n > 32, take the rightmost 32 bytes (truncate left)
         // If n <= 32, align to the right (zero-pad left)
         let start = if n > 32 { n - 32 } else { 0 };
         let copy_len = n.min(32);
         let array_start = 32 - copy_len;
-        
+
         for i in 0..copy_len {
             if let Some(byte) = bytes.get(start + i) {
                 array[(array_start + i) as usize] = byte;
             }
         }
-        
+
         let bytes_ref = Bytes::from_slice(env, &array);
         U256::from_be_bytes(env, &bytes_ref).into()
     }
