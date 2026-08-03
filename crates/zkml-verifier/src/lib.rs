@@ -281,22 +281,12 @@ impl ZkmlVerifierContract {
     /// The 32-byte value is interpreted as a big-endian integer and reduced modulo the BN254
     /// scalar field order r by the Bn254Fr constructor. This is the standard reduction.
     fn bytes_to_fr(env: &Env, bytes: &Bytes) -> Bn254Fr {
-        let n = bytes.len();
         let mut array = [0u8; 32];
-
-        // Copy bytes right-aligned into the 32-byte array
-        // If n > 32, take the rightmost 32 bytes (truncate left)
-        // If n <= 32, align to the right (zero-pad left)
-        let start = if n > 32 { n - 32 } else { 0 };
-        let copy_len = n.min(32);
-        let array_start = 32 - copy_len;
-
-        for i in 0..copy_len {
-            if let Some(byte) = bytes.get(start + i) {
-                array[(array_start + i) as usize] = byte;
-            }
-        }
-
+        let len = bytes.len().min(32);
+        // Right-align into the array (zero-pad left for big-endian scalar)
+        let start = 32 - len as usize;
+        let src = bytes.slice(0..len);
+        src.copy_into_slice(&mut array[start..]);
         let bytes_ref = Bytes::from_slice(env, &array);
         U256::from_be_bytes(env, &bytes_ref).into()
     }
